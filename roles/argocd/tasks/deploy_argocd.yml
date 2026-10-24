@@ -1,0 +1,105 @@
+---
+# Tasks for deploying ArgoCD via Helm pulling from Harbor OCI library
+
+- name: Identify management cluster for ArgoCD deployment
+  ansible.builtin.set_fact:
+    mgmt_cluster: "{{ (kind_clusters | selectattr('is_management_cluster', 'defined') | selectattr('is_management_cluster', 'equalto', true) | first) | default(kind_clusters[0]) }}"
+
+- name: Set management cluster kubeconfig
+  ansible.builtin.set_fact:
+    argocd_kubeconfig: "/root/.kube/{{ mgmt_cluster.name }}.kubeconfig"
+
+- name: Ensure argocd namespace exists
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} create ns {{ argocd_namespace }} --dry-run=client -o yaml | \
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} apply -f -
+  changed_when: false
+
+- name: Read Ratlab Root CA certificate from devbox
+  ansible.builtin.slurp:
+    src: /etc/ssl/certs/ratlab-root-ca.pem
+  register: ratlab_ca_slurp
+  ignore_errors: true
+
+- name: Set Ratlab Root CA content fact
+  ansible.builtin.set_fact:
+    ratlab_root_ca_content: "{{ (ratlab_ca_slurp.content | b64decode) if (ratlab_ca_slurp is defined and ratlab_ca_slurp.content is defined) else (lookup('file', playbook_dir ~ '/../files/certs/ratlab-root-ca.crt', errors='ignore') | default('')) }}"
+
+- name: Ensure argocd-tls-certs-cm exists with Helm adoption ownership metadata
+  ansible.builtin.shell: |
+    if [ -f /etc/ssl/certs/ratlab-root-ca.pem ]; then
+      {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} create configmap argocd-tls-certs-cm \
+        -n {{ argocd_namespace }} \
+        --from-file={{ harbor_domain | default('registry.' ~ internal_domain) }}=/etc/ssl/certs/ratlab-root-ca.pem \
+        --dry-run=client -o yaml | \
+      {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} apply -f -
+    fi
+
+    if {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} get configmap argocd-tls-certs-cm -n {{ argocd_namespace }} >/dev/null 2>&1; then
+      {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+        label configmap argocd-tls-certs-cm app.kubernetes.io/managed-by=Helm --overwrite
+      {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+        annotate configmap argocd-tls-certs-cm meta.helm.sh/release-name=argocd meta.helm.sh/release-namespace={{ argocd_namespace }} --overwrite
+    fi
+  changed_when: false
+
+- name: Ensure ArgoCD chart upload script is available on devbox
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/upload-argocd-chart-to-harbor.sh"
+    dest: /usr/local/bin/upload-argocd-chart-to-harbor
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Ensure official ArgoCD chart is published to Harbor OCI registry
+  ansible.builtin.shell: |
+    /usr/local/bin/upload-argocd-chart-to-harbor {{ argocd_helm_chart_version | default('') }}
+  register: argocd_harbor_push
+  changed_when: "'Successfully published' in argocd_harbor_push.stdout"
+
+- name: Authenticate Helm with Harbor OCI registry
+  ansible.builtin.shell: |
+    echo "{{ harbor_admin_password | default('admin') }}" | {{ kind_install_dir }}/helm registry login "{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ harbor_https_port | default(8443) }}" \
+      --username "admin" \
+      --password-stdin \
+      --insecure
+  changed_when: false
+
+- name: Render ArgoCD Helm values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /etc/kubernetes/argocd-values.yaml
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Deploy ArgoCD via Helm pulling from Harbor OCI library
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/helm upgrade --install argocd \
+      oci://{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ harbor_https_port | default(8443) }}/{{ harbor_project | default('library') }}/argo-cd \
+      {% if argocd_helm_chart_version %}--version {{ argocd_helm_chart_version }}{% endif %} \
+      --namespace {{ argocd_namespace }} \
+      --values /etc/kubernetes/argocd-values.yaml \
+      --kubeconfig {{ argocd_kubeconfig }} \
+      --insecure-skip-tls-verify \
+      --timeout 10m
+  changed_when: true
+
+- name: Wait for ArgoCD server deployment to be available
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }}
+    wait --namespace {{ argocd_namespace }} --for=condition=available deployment/argocd-server --timeout=180s
+  changed_when: false
+
+- name: Ensure ArgoCD admin password in argocd-secret matches argocd_admin_bcrypt
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+      patch secret argocd-secret \
+      -p '{"stringData": {"admin.password": "{{ argocd_admin_bcrypt }}", "admin.passwordMtime": "'$(date -u +%FT%TZ)'"}}'
+  changed_when: false
+
+- name: Wait for ArgoCD ApplicationSet controller to be available
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }}
+    wait --namespace {{ argocd_namespace }} --for=condition=available deployment/argocd-applicationset-controller --timeout=180s
+  changed_when: false

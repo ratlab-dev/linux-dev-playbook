@@ -1,0 +1,182 @@
+---
+# Tasks for OpenBao TLS Setup & CSR Generation
+
+- name: Check if OpenBao private key exists
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_dir }}/vault.key"
+  register: openbao_key_stat
+
+- name: Check if OpenBao private key is backed up on controller
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../files/certs/vault.key"
+  register: controller_vault_key
+  delegate_to: localhost
+  become: false
+
+- name: Restore OpenBao private key from controller if missing on target
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/certs/vault.key"
+    dest: "{{ openbao_tls_dir }}/vault.key"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0600'
+  when:
+    - not openbao_key_stat.stat.exists
+    - controller_vault_key.stat.exists
+
+- name: Refresh OpenBao key stat after potential restoration
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_dir }}/vault.key"
+  register: openbao_key_stat_refreshed
+
+- name: Generate OpenBao private key if missing
+  ansible.builtin.command: >-
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out {{ openbao_tls_dir }}/vault.key
+  when: not openbao_key_stat_refreshed.stat.exists
+
+- name: Backup OpenBao private key to controller to preserve across cleanups
+  ansible.builtin.fetch:
+    src: "{{ openbao_tls_dir }}/vault.key"
+    dest: "{{ playbook_dir }}/../files/certs/vault.key"
+    flat: true
+
+- name: Secure OpenBao private key permissions
+  ansible.builtin.file:
+    path: "{{ openbao_tls_dir }}/vault.key"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0600'
+
+- name: Deploy OpenSSL CSR configuration
+  ansible.builtin.template:
+    src: csr.conf.j2
+    dest: "{{ openbao_tls_dir }}/csr.conf"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0640'
+
+- name: Generate Certificate Signing Request (CSR) for OpenBao
+  ansible.builtin.command: >-
+    openssl req -new
+    -key {{ openbao_tls_dir }}/vault.key
+    -out {{ openbao_tls_dir }}/vault.csr
+    -config {{ openbao_tls_dir }}/csr.conf
+  args:
+    creates: "{{ openbao_tls_dir }}/vault.csr"
+
+- name: Fetch OpenBao CSR to controller for YubiKey Root CA signing
+  ansible.builtin.fetch:
+    src: "{{ openbao_tls_dir }}/vault.csr"
+    dest: "{{ playbook_dir }}/../files/certs/openbao.csr"
+    flat: true
+
+- name: Check if signed OpenBao certificate exists on controller
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../files/certs/openbao.crt"
+  register: local_signed_openbao_cert
+  delegate_to: localhost
+  become: false
+
+- name: Check if existing OpenBao certificate is valid for more than 30 days
+  ansible.builtin.command: >-
+    openssl x509 -checkend {{ vault_tls_expiry_threshold_seconds | default(2592000) }} -noout -in {{ playbook_dir }}/../files/certs/openbao.crt
+  register: openbao_cert_checkend
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: local_signed_openbao_cert.stat.exists
+
+- name: Verify that existing certificate matches the current private key
+  ansible.builtin.shell: |
+    KEY_MOD=$(openssl pkey -in {{ openbao_tls_dir }}/vault.key -pubout -outform PEM | openssl md5)
+    CERT_MOD=$(openssl x509 -in {{ playbook_dir }}/../files/certs/openbao.crt -pubkey -noout | openssl md5)
+    [ "$KEY_MOD" = "$CERT_MOD" ]
+  register: cert_matches_key
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  changed_when: false
+  when: local_signed_openbao_cert.stat.exists
+
+- name: Determine if Vault TLS certificate requires YubiKey signing
+  ansible.builtin.set_fact:
+    vault_tls_needs_signing: >-
+      {{ (not local_signed_openbao_cert.stat.exists) or (openbao_cert_checkend.rc != 0) or (cert_matches_key.rc is defined and cert_matches_key.rc != 0) }}
+
+- name: Display certificate status banner
+  ansible.builtin.debug:
+    msg: >-
+      {% if not vault_tls_needs_signing %}
+      Vault TLS certificate is healthy and valid for > 30 days. Reusing existing certificate (No YubiKey required).
+      {% else %}
+      Vault TLS certificate is missing or expiring within 30 days. Interactive YubiKey signing required.
+      {% endif %}
+
+- name: Perform Interactive YubiKey Signing for Vault TLS Certificate
+  block:
+    - name: Prompt user to connect YubiKey
+      ansible.builtin.pause:
+        prompt: |
+
+          ================================================================================
+          YUBIKEY ROOT CA SIGNING REQUIRED FOR VAULT TLS (vault.ratlab.dev)
+          Certificate validity: {{ vault_tls_validity_days | default(730) }} days (2 years).
+
+          1. Ensure your YubiKey is connected to this Mac.
+          2. Press [ENTER] to proceed with signing...
+          ================================================================================
+
+    - name: Execute YubiKey signing script locally on Mac
+      ansible.builtin.command: >-
+        {{ playbook_dir }}/../scripts/sign_with_yubikey.sh
+        {{ playbook_dir }}/../files/certs/openbao.csr
+        {{ playbook_dir }}/../files/certs/openbao.crt
+        {{ vault_tls_validity_days | default(730) }}
+        server
+      delegate_to: localhost
+      become: false
+      register: yubikey_sign_result
+      changed_when: true
+  when: vault_tls_needs_signing | bool
+
+- name: Deploy signed OpenBao certificate to devbox
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/certs/openbao.crt"
+    dest: "{{ openbao_tls_dir }}/vault.crt"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Deploy OpenBao configuration file (openbao.hcl)
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_config_dir }}/openbao.hcl"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0640'
+  notify: Restart openbao
+
+- name: Create symlink from config.hcl to openbao.hcl
+  ansible.builtin.file:
+    src: "{{ openbao_config_dir }}/openbao.hcl"
+    dest: "{{ openbao_config_dir }}/config.hcl"
+    state: link
+    force: true
+
+- name: Ensure OpenBao environment file exists for systemd service
+  ansible.builtin.file:
+    path: "{{ openbao_config_dir }}/openbao.env"
+    state: touch
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0640'
+    modification_time: preserve
+    access_time: preserve
+
+- name: Ensure OpenBao service is started and enabled
+  ansible.builtin.service:
+    name: openbao
+    enabled: true
+    state: started

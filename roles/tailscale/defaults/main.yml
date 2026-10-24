@@ -1,0 +1,7 @@
+---
+# Defaults for role: tailscale
+tailscale_auth_key: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') | default('', true) }}"
+tailscale_ssh: true
+tailscale_accept_routes: true
+tailscale_extra_args: ""
+tailscale_hostname: "{{ (baseline_hostname.split('.')[0]) | default(ansible_hostname) }}"

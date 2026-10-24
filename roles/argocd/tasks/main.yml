@@ -1,0 +1,36 @@
+---
+# Main entrypoint for role: argocd
+
+- name: Determine Tailscale IP if not already set
+  block:
+    - name: Query tailscale IP
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Set tailscale_node_ip fact
+      ansible.builtin.set_fact:
+        tailscale_node_ip: "{{ tailscale_ip_cmd.stdout | trim if (tailscale_ip_cmd.rc is defined and tailscale_ip_cmd.rc == 0) else (ansible_host | default(ansible_default_ipv4.address)) }}"
+  when: tailscale_node_ip is not defined
+  tags: [always]
+
+- name: Initialize and synchronize GitOps repository with Gitea
+  ansible.builtin.import_tasks: gitops_repo.yml
+  tags: [argocd, argocd_repo]
+
+- name: Deploy ArgoCD via Helm on the management cluster
+  ansible.builtin.import_tasks: deploy_argocd.yml
+  tags: [argocd, argocd_deploy]
+
+- name: Register clusters and cross-referencing labels in ArgoCD
+  ansible.builtin.import_tasks: register_clusters.yml
+  tags: [argocd, argocd_clusters]
+
+- name: Deploy ArgoCD ApplicationSets and root applications
+  ansible.builtin.import_tasks: apply_apps.yml
+  tags: [argocd, argocd_apps]
+
+- name: Configure Nginx reverse proxy and DNS for ArgoCD UI
+  ansible.builtin.import_tasks: nginx_proxy.yml
+  tags: [argocd, argocd_proxy]

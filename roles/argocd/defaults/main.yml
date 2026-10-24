@@ -1,0 +1,14 @@
+---
+# Defaults for role: argocd
+argocd_enable: true
+argocd_namespace: "argocd"
+argocd_domain: "argocd.ratlab.dev"
+argocd_admin_password: "admin"
+# Bcrypt hash for password 'admin'
+argocd_admin_bcrypt: "$2y$10$d86XJfjlicvsXCYixyw65OWVMs4c41j6yGr92lyMQUKA3a8DsVuQy"
+argocd_gitops_repo_name: "gitops"
+argocd_gitea_url: "https://git.{{ internal_domain | default('ratlab.dev') }}:3000/admin/gitops.git"
+
+argocd_helm_chart_version: "" # Defaults to latest available in argo repo
+argocd_service_type: "LoadBalancer"
+kind_install_dir: "/usr/local/bin"

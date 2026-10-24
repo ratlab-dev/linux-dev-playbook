@@ -1,0 +1,28 @@
+---
+# Baseline verification tasks (Pure SSH Access & Baseline Validation)
+
+- name: Verify SSH service is listening on port 22
+  ansible.builtin.wait_for:
+    port: "{{ baseline_ssh_port }}"
+    host: "127.0.0.1"
+    timeout: 10
+    state: started
+
+- name: Check root authorized_keys file
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: root_auth_keys_stat
+
+- name: Display baseline verification summary
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "                      BASELINE PROVISIONING COMPLETE                            "
+      - "================================================================================"
+      - "Hostname:         {{ ansible_hostname }}.{{ internal_domain }}"
+      - "SSH Port:         {{ baseline_ssh_port }} (Listening)"
+      - "Root Auth Keys:   {{ 'Configured' if root_auth_keys_stat.stat.exists else 'Not Found' }}"
+      - "IPv4 Addresses:   {{ ansible_all_ipv4_addresses | default([]) | join(', ') }}"
+      - "Status:           OpenSSH baseline configured successfully."
+      - "Next:             Ready for Tailscale onboarding and devbox services."
+      - "================================================================================"

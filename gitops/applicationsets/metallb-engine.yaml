@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metallb-engine
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  sources:
+    # 1. Official Helm chart uploaded to Harbor OCI registry
+    - repoURL: registry.ratlab.dev:8443/library
+      chart: metallb
+      targetRevision: 0.14.9
+      helm:
+        valueFiles:
+          - $values/apps/metallb/values.yaml
+    # 2. Values source from GitOps repository
+    - repoURL: https://git.ratlab.dev:3000/admin/gitops.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle

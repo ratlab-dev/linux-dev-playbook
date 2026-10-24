@@ -1,0 +1,68 @@
+---
+# Tasks for managing the GitOps repository lifecycle (local workspace -> /tmp -> Gitea)
+
+- name: Ensure temporary GitOps staging directory exists on target
+  ansible.builtin.file:
+    path: /tmp/gitops-init
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy local GitOps manifests to /tmp/gitops-init on target
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../gitops/"
+    dest: /tmp/gitops-init/
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Adjust GitOps manifests for target environment
+  ansible.builtin.shell: |
+    # Dynamically match Kind docker subnet in MetalLB pool if kind network exists
+    KIND_SUBNET=$(docker network inspect kind -f '{% raw %}{{range .IPAM.Config}}{{println .Subnet}}{{end}}{% endraw %}' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+' || true)
+    if [ -n "$KIND_SUBNET" ]; then
+      PREFIX=$(echo "$KIND_SUBNET" | cut -d. -f1-2)
+      if [ -f /tmp/gitops-init/apps/metallb-config/pool.yaml ]; then
+        sed -i "s/172\.[0-9]\+\./${PREFIX}./g" /tmp/gitops-init/apps/metallb-config/pool.yaml
+      fi
+    fi
+
+    # Ensure Harbor OCI registry URL and Gitea URL in manifests match variables
+    HARBOR_REGISTRY="{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ harbor_https_port | default(8443) }}"
+    GITEA_URL="https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/{{ argocd_gitops_repo_name | default('gitops') }}.git"
+
+    find /tmp/gitops-init -type f \( -name "*.yaml" -o -name "*.yml" \) -exec sed -i \
+      -e "s|registry\.ratlab\.dev:8443/library|${HARBOR_REGISTRY}/library|g" \
+      -e "s|https://git\.ratlab\.dev:3000/admin/gitops\.git|${GITEA_URL}|g" {} +
+  changed_when: false
+
+- name: Ensure Gitea repository {{ argocd_gitops_repo_name }} exists
+  ansible.builtin.shell: |
+    REPO_CHECK=$(curl -sk -u admin:admin -o /dev/null -w "%{http_code}" https://127.0.0.1:{{ gitea_http_port | default(3000) }}/api/v1/repos/admin/{{ argocd_gitops_repo_name }})
+    if [ "$REPO_CHECK" = "404" ]; then
+      curl -sk -u admin:admin -X POST https://127.0.0.1:{{ gitea_http_port | default(3000) }}/api/v1/user/repos \
+        -H "Content-Type: application/json" \
+        -d '{"name":"{{ argocd_gitops_repo_name }}","private":false,"auto_init":false}'
+    fi
+  changed_when: false
+
+- name: Initialize Git repository in /tmp/gitops-init and push to Gitea
+  ansible.builtin.shell: |
+    cd /tmp/gitops-init
+    if [ ! -d .git ]; then
+      git init -b main
+    fi
+    git config user.name "Ratlab GitOps"
+    git config user.email "gitops@{{ internal_domain | default('ratlab.dev') }}"
+    git config http.sslVerify false
+
+    git add -A
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+      git commit -m "Update GitOps Application and ApplicationSet definitions [Ansible Automation]"
+    fi
+
+    git remote remove origin 2>/dev/null || true
+    git remote add origin https://admin:admin@127.0.0.1:{{ gitea_http_port | default(3000) }}/admin/{{ argocd_gitops_repo_name }}.git
+    git push -f -u origin main
+  changed_when: true

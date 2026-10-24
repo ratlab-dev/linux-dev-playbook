@@ -1,0 +1,31 @@
+---
+# Defaults for role: openbao
+
+openbao_enable: true
+openbao_version: "2.7.1"
+openbao_port: 8200
+openbao_cluster_port: 8201
+openbao_domain: "vault.ratlab.dev"
+openbao_user: "openbao"
+openbao_group: "openbao"
+
+openbao_install_dir: "/usr/bin"
+openbao_config_dir: "/etc/openbao"
+openbao_data_dir: "/var/lib/openbao/data"
+openbao_tls_dir: "/etc/openbao/tls"
+
+# TLS Certificate Validity and Expiration Settings
+vault_tls_validity_days: 730              # 2 years
+vault_tls_expiry_threshold_seconds: 2592000 # 30 days (1 month)
+intermediate_ca_validity_days: 3650       # 10 years
+
+# Intermediate CA settings
+openbao_pki_mount: "pki_ratlab"
+openbao_pki_role: "ratlab-services"
+openbao_pki_max_ttl: "8760h"
+openbao_pki_default_ttl: "4380h"
+openbao_pki_allowed_domains:
+  - "ratlab.dev"
+openbao_pki_excluded_domains:
+  - "vault.ratlab.dev"
+openbao_pki_root_ca_file: "{{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"

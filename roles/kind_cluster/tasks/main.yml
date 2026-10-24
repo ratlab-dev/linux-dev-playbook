@@ -1,0 +1,44 @@
+---
+# Main entrypoint for role: kind_cluster
+
+- name: Load OpenBao initialization credentials if not already loaded
+  block:
+    - name: Slurp /root/.openbao_init.json
+      ansible.builtin.slurp:
+        src: "/root/.openbao_init.json"
+      register: slurped_openbao_init
+
+    - name: Parse OpenBao initialization credentials
+      ansible.builtin.set_fact:
+        openbao_init_data: "{{ slurped_openbao_init.content | b64decode | from_json }}"
+  when: openbao_init_data is not defined
+  tags: [always]
+
+- name: Determine Tailscale IP if not already set
+  block:
+    - name: Query tailscale IP
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Set tailscale_node_ip fact
+      ansible.builtin.set_fact:
+        tailscale_node_ip: "{{ tailscale_ip_cmd.stdout | trim if (tailscale_ip_cmd.rc is defined and tailscale_ip_cmd.rc == 0) else (ansible_host | default(ansible_default_ipv4.address)) }}"
+  when: tailscale_node_ip is not defined
+  tags: [always]
+
+- name: Install Kind, kubectl, and Helm CLI binaries
+  ansible.builtin.import_tasks: install_tools.yml
+  tags: [kind, kind_install, k8s_tools]
+
+- name: Provision Kind clusters and configure networking & Vault trust
+  ansible.builtin.include_tasks: cluster.yml
+  loop: "{{ kind_clusters }}"
+  loop_control:
+    loop_var: current_cluster
+  tags: [kind, kind_cluster]
+
+- name: Generate multi-cluster kubeconfigs for local and remote usage
+  ansible.builtin.import_tasks: kubeconfig.yml
+  tags: [kind, kind_kubeconfig, kubeconfig]

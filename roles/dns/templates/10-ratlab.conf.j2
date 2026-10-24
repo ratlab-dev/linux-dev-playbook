@@ -1,0 +1,38 @@
+# Managed by Ansible (roles/dns)
+# dnsmasq configuration for {{ dns_domain }}
+
+# Listen on Tailscale interface and local IP
+bind-dynamic
+{% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
+listen-address={{ tailscale_node_ip }}
+{% endif %}
+listen-address=127.0.0.1
+
+# Never forward plain names without dots
+domain-needed
+# Never forward addresses in non-routed address spaces
+bogus-priv
+
+# Do not read default /etc/hosts to prevent returning 127.0.1.1 for devbox
+no-hosts
+
+# Watch dynamic hosts directory for service registration and node onboarding
+# inotify automatically detects new, updated, and deleted records with zero downtime
+hostsdir={{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}
+
+# Upstream DNS forwarders
+no-resolv
+{% for server in dns_upstream_servers %}
+server={{ server }}
+{% endfor %}
+
+# Wildcard root domain mapping: *.{{ dns_domain }} -> {{ tailscale_node_ip | default(ansible_default_ipv4.address) }}
+address=/{{ dns_domain }}/{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}
+
+# Explicit and custom hostname records
+{% for record in dns_custom_records %}
+address=/{{ record.name }}/{{ record.ip }}
+{% endfor %}
+
+# Cache size
+cache-size=1000

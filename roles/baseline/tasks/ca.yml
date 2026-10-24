@@ -1,0 +1,56 @@
+---
+# Custom CA certificate installation tasks
+
+- name: Determine system CA trust directory
+  ansible.builtin.set_fact:
+    ca_trust_dir: "{{ {'Debian': '/usr/local/share/ca-certificates/custom', 'RedHat': '/etc/pki/ca-trust/source/anchors', 'Archlinux': '/etc/ca-certificates/trust-source/anchors'}[ansible_os_family] | default('/usr/local/share/ca-certificates/custom') }}"
+    ca_update_cmd: "{{ {'Debian': 'update-ca-certificates', 'RedHat': 'update-ca-trust extract', 'Archlinux': 'trust extract-compat'}[ansible_os_family] | default('update-ca-certificates') }}"
+
+- name: Ensure custom CA trust directory exists
+  ansible.builtin.file:
+    path: "{{ ca_trust_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Find custom CA certificate files in files/certs on controller
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/../files/certs"
+    patterns:
+      - '*.crt'
+      - '*.pem'
+    excludes:
+      - 'openbao.crt'
+      - '*.csr'
+  register: local_ca_certs
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Copy custom CA certificates to system trust directory
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ ca_trust_dir }}/{{ item.path | basename | regex_replace('\\.pem$', '.crt') }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ local_ca_certs.files }}"
+  register: copied_ca_files
+  when: local_ca_certs.files is defined and local_ca_certs.files | length > 0
+
+- name: Install raw custom CA certificates defined in variables
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ ca_trust_dir }}/{{ item.name }}.crt"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ baseline_custom_cas }}"
+  register: copied_raw_cas
+  when: baseline_custom_cas is defined and baseline_custom_cas | length > 0
+
+- name: Update system CA trust store
+  ansible.builtin.command: "{{ ca_update_cmd }}"
+  when: (copied_ca_files is changed) or (copied_raw_cas is changed)
+  changed_when: true

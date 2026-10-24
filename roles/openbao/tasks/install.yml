@@ -1,0 +1,89 @@
+---
+# Tasks for OpenBao installation via official APT repository (with UI support)
+
+- name: Ensure /etc/apt/keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Download OpenBao official GPG signing key
+  ansible.builtin.get_url:
+    url: "https://openbao.org/assets/openbao-gpg-pub-20240618.asc"
+    dest: /etc/apt/keyrings/openbao.asc
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure OpenBao official APT repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/openbao.sources
+    content: |
+      Types: deb
+      URIs: https://pkgs.openbao.org/deb/
+      Suites: stable
+      Components: main
+      Signed-By: /etc/apt/keyrings/openbao.asc
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Remove legacy OpenBao apt list if present
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/openbao.list
+    state: absent
+
+- name: Update apt cache and install official openbao package
+  ansible.builtin.apt:
+    name:
+      - openbao
+      - nginx
+    state: present
+    update_cache: true
+
+- name: Create symlink for vault command
+  ansible.builtin.file:
+    src: /usr/bin/bao
+    dest: /usr/bin/vault
+    state: link
+    force: false
+  failed_when: false
+
+- name: Ensure openbao system group exists
+  ansible.builtin.group:
+    name: "{{ openbao_group }}"
+    state: present
+    system: true
+
+- name: Ensure openbao system user exists
+  ansible.builtin.user:
+    name: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/openbao
+    create_home: false
+
+- name: Ensure OpenBao user and directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: '0750'
+  loop:
+    - "{{ openbao_config_dir }}"
+    - "{{ openbao_data_dir }}"
+    - "{{ openbao_tls_dir }}"
+
+- name: Deploy OpenBao shell environment profile (/etc/profile.d/openbao.sh)
+  ansible.builtin.copy:
+    dest: /etc/profile.d/openbao.sh
+    content: |
+      export VAULT_ADDR="http://127.0.0.1:{{ openbao_port }}"
+      export BAO_ADDR="http://127.0.0.1:{{ openbao_port }}"
+    owner: root
+    group: root
+    mode: '0644'

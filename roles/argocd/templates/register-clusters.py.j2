@@ -1,0 +1,73 @@
+import json
+import yaml
+import subprocess
+import base64
+import os
+
+with open('/etc/ssl/certs/ratlab-root-ca.pem', 'r') as f:
+    root_ca_b64 = base64.b64encode(f.read().encode('utf-8')).decode('utf-8')
+
+clusters_json = '''{{ kind_clusters | to_json }}'''
+clusters = json.loads(clusters_json)
+kubeconfig = "{{ argocd_kubeconfig }}"
+namespace = "{{ argocd_namespace }}"
+
+for cluster in clusters:
+    c_name = cluster['name']
+    c_domain = cluster['domain']
+    is_mgmt = cluster.get('is_management_cluster', False)
+
+    labels = {
+        'argocd.argoproj.io/secret-type': 'cluster'
+    }
+    for k, v in cluster.get('labels', {}).items():
+        labels[k] = str(v)
+
+    if is_mgmt:
+        server = 'https://kubernetes.default.svc'
+        config_str = '{}'
+    else:
+        server = f'https://{c_domain}'
+        token_path = f'/root/.kube/{c_name}-admin.token'
+        token = ''
+        if os.path.exists(token_path):
+            with open(token_path, 'r') as tf:
+                token = tf.read().strip()
+
+        config_dict = {
+            'bearerToken': token,
+            'tlsClientConfig': {
+                'insecure': False,
+                'caData': root_ca_b64
+            }
+        }
+        config_str = json.dumps(config_dict)
+
+    secret = {
+        'apiVersion': 'v1',
+        'kind': 'Secret',
+        'metadata': {
+            'name': f'cluster-{c_name}',
+            'namespace': namespace,
+            'labels': labels
+        },
+        'type': 'Opaque',
+        'stringData': {
+            'name': c_name,
+            'server': server,
+            'config': config_str
+        }
+    }
+
+    yaml_str = yaml.dump(secret, default_flow_style=False)
+    proc = subprocess.Popen(
+        ['{{ kind_install_dir }}/kubectl', '--kubeconfig', kubeconfig, 'apply', '-f', '-'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    stdout, stderr = proc.communicate(input=yaml_str.encode('utf-8'))
+    if proc.returncode != 0:
+        print(f"Failed to register cluster {c_name}: {stderr.decode('utf-8')}", flush=True)
+        exit(1)
+    print(f"Successfully registered cluster {c_name} in ArgoCD: {stdout.decode('utf-8').strip()}", flush=True)

@@ -1,0 +1,22 @@
+---
+# Entry point for role: baseline (Root CAs first, then packages, SSH & verification)
+
+- name: Install custom Certificate Authorities (CAs) - Trust Root CA first
+  ansible.builtin.import_tasks: ca.yml
+  tags: [baseline, ca]
+
+- name: Apply baseline system packages and configuration
+  ansible.builtin.import_tasks: system.yml
+  tags: [baseline, system]
+
+- name: Configure OpenSSH server and access
+  ansible.builtin.import_tasks: ssh.yml
+  tags: [baseline, ssh]
+
+- name: Configure enhanced shell, completions (fzf, kubectx, kubens) and history
+  ansible.builtin.import_tasks: shell.yml
+  tags: [baseline, shell, tools]
+
+- name: Verify baseline configuration
+  ansible.builtin.import_tasks: verify.yml
+  tags: [baseline, verify]

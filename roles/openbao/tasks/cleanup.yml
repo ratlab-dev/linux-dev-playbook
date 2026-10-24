@@ -1,0 +1,40 @@
+---
+# Cleanup tasks for previous manual OpenBao installations
+
+- name: Check if old manual openbao binary exists
+  ansible.builtin.stat:
+    path: /usr/local/bin/bao
+  register: old_manual_bao
+
+- name: Check if old manual systemd unit exists
+  ansible.builtin.stat:
+    path: /etc/systemd/system/openbao.service
+  register: old_manual_service
+
+- name: Stop old openbao service if manual installation detected
+  ansible.builtin.systemd:
+    name: openbao
+    state: stopped
+  when: old_manual_bao.stat.exists or old_manual_service.stat.exists
+  failed_when: false
+
+- name: Remove old manually placed service unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/openbao.service
+    state: absent
+  notify: Reload systemd daemon
+  when: old_manual_service.stat.exists
+
+- name: Flush handlers to reload systemd
+  ansible.builtin.meta: flush_handlers
+  when: old_manual_service.stat.exists
+
+- name: Remove old manual binaries from /usr/local/bin
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/bin/bao
+    - /usr/local/bin/openbao
+    - /usr/local/bin/vault
+  when: old_manual_bao.stat.exists

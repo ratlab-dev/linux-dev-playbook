@@ -1,0 +1,201 @@
+---
+# Tasks for role: dns (dnsmasq with dynamic hostsdir and Tailscale Split DNS)
+
+- name: Ensure Tailscale IPv4 fact is populated
+  ansible.builtin.command: tailscale ip -4
+  register: ts_ip_detect
+  changed_when: false
+  failed_when: false
+  when: tailscale_node_ip is not defined or tailscale_node_ip | length == 0
+
+- name: Set tailscale_node_ip fact from detection
+  ansible.builtin.set_fact:
+    tailscale_node_ip: "{{ ts_ip_detect.stdout.strip() }}"
+  when:
+    - ts_ip_detect is defined
+    - ts_ip_detect.rc is defined
+    - ts_ip_detect.rc == 0
+    - ts_ip_detect.stdout | length > 0
+
+- name: Check if systemd-resolved is active
+  ansible.builtin.systemd:
+    name: systemd-resolved
+  register: resolved_check
+  failed_when: false
+
+- name: Disable systemd-resolved DNSStubListener if active (prevents port 53 conflict)
+  block:
+    - name: Create systemd-resolved drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Configure resolved to not bind DNS stub to port 53
+      ansible.builtin.copy:
+        dest: /etc/systemd/resolved.conf.d/no-stub.conf
+        content: |
+          [Resolve]
+          DNSStubListener=no
+        mode: '0644'
+      notify: Restart systemd-resolved
+
+    - name: Flush handlers to apply resolved stub changes immediately
+      ansible.builtin.meta: flush_handlers
+  when:
+    - resolved_check.status is defined
+    - resolved_check.status.ActiveState is defined
+    - resolved_check.status.ActiveState == "active"
+
+- name: Install dnsmasq package (Debian family)
+  ansible.builtin.apt:
+    name:
+      - dnsmasq
+      - dnsutils
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == 'Debian'
+
+- name: Install dnsmasq package (RedHat family)
+  ansible.builtin.dnf:
+    name:
+      - dnsmasq
+      - bind-utils
+    state: present
+  when: ansible_os_family == 'RedHat'
+
+- name: Install dnsmasq package (Arch family)
+  ansible.builtin.pacman:
+    name:
+      - dnsmasq
+      - bind
+    state: present
+  when: ansible_os_family == 'Archlinux'
+
+- name: Ensure dnsmasq configuration and dynamic hosts directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /etc/dnsmasq.d
+    - "{{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}"
+
+- name: Deploy dnsmasq configuration for ratlab.dev
+  ansible.builtin.template:
+    src: 10-ratlab.conf.j2
+    dest: /etc/dnsmasq.d/10-ratlab.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart dnsmasq
+
+- name: Deploy baseline devbox DNS record into dynamic hostsdir
+  ansible.builtin.copy:
+    dest: "{{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}/00-baseline.hosts"
+    content: |
+      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Deploy initial core service DNS records (vault, git, registry) into dynamic hostsdir
+  ansible.builtin.copy:
+    dest: "{{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}/10-services.hosts"
+    content: |
+      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} vault.{{ dns_domain }}
+      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} git.{{ dns_domain }}
+      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} registry.{{ dns_domain }}
+      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} harbor.{{ dns_domain }}
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Deploy ratlab-dns dynamic hook & CLI utility
+  ansible.builtin.template:
+    src: ratlab-dns.sh.j2
+    dest: /usr/local/bin/ratlab-dns
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Ensure dnsmasq service is enabled and started
+  ansible.builtin.service:
+    name: dnsmasq
+    enabled: true
+    state: started
+
+- name: Allow DNS port 53 (TCP/UDP) in UFW if installed
+  block:
+    - name: Check if ufw is installed
+      ansible.builtin.command: which ufw
+      register: ufw_dns_check
+      changed_when: false
+      failed_when: false
+
+    - name: Allow DNS traffic
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "ufw allow 53/tcp"
+        - "ufw allow 53/udp"
+      when: ufw_dns_check.rc == 0
+      changed_when: false
+
+# ==============================================================================
+# Tailscale Split DNS Configuration (Executed from Mac workstation)
+# ==============================================================================
+
+- name: Ensure Mac Tailscale client accepts Tailscale DNS
+  ansible.builtin.command: tailscale set --accept-dns=true
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Configure Tailscale Split DNS for ratlab.dev via API (when API key is provided)
+  ansible.builtin.uri:
+    url: "https://api.tailscale.com/api/v2/tailnet/-/dns/split-nameservers"
+    method: PATCH
+    user: "{{ lookup('env', 'TAILSCALE_API_KEY') }}"
+    password: ""
+    force_basic_auth: true
+    body_format: json
+    body:
+      "{{ dns_domain }}": ["{{ tailscale_node_ip }}"]
+    status_code: [200, 204]
+  delegate_to: localhost
+  become: false
+  when:
+    - lookup('env', 'TAILSCALE_API_KEY') is defined
+    - lookup('env', 'TAILSCALE_API_KEY') | length > 0
+  ignore_errors: true
+
+- name: Verify DNS query resolution locally on devbox
+  ansible.builtin.command: dig @127.0.0.1 vault.{{ dns_domain }} +short
+  register: local_dns_test
+  changed_when: false
+  failed_when: false
+
+- name: Display Tailscale Split DNS Configuration Summary
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "                    RATLAB.DEV SPLIT DNS CONFIGURED                             "
+      - "================================================================================"
+      - "DNS Server:           dnsmasq (Port 53)"
+      - "Tailscale Server IP:  {{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+      - "Dynamic Hosts Dir:    {{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}"
+      - "Local Test Lookup:    vault.{{ dns_domain }} -> {{ local_dns_test.stdout | default('N/A') }}"
+      - "Management CLI:       ratlab-dns add <domain> [ip] | ratlab-dns remove <domain>"
+      - "--------------------------------------------------------------------------------"
+      - "TAILSCALE TAILNET SETUP (One-Time Admin Action):"
+      - "To enable seamless *.{{ dns_domain }} resolution on your Mac and all Tailnet peers:"
+      - "1. Open: https://login.tailscale.com/admin/dns"
+      - "2. Under 'Nameservers', click 'Add nameserver' -> 'Custom...'"
+      - "3. Enter Nameserver IP:  {{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+      - "4. Check 'Restrict to search domain' (Split DNS) and enter: {{ dns_domain }}"
+      - "5. Click Save."
+      - "================================================================================"

@@ -1,0 +1,182 @@
+---
+# Tasks for role: verify (Automated End-to-End Validation)
+
+- name: Test DNS resolution for ratlab.dev domains
+  ansible.builtin.command: "getent hosts {{ item }}"
+  loop:
+    - "{{ openbao_domain }}"
+    - "{{ gitea_domain }}"
+    - "{{ harbor_domain }}"
+  register: dns_test_results
+  changed_when: false
+  failed_when: false
+
+- name: Test Docker container execution
+  ansible.builtin.command: docker run --rm alpine echo "Docker OK"
+  register: docker_test_result
+  changed_when: false
+  failed_when: false
+
+- name: Test OpenBao via Nginx HTTPS (Port 443)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443/v1/sys/health"
+    headers:
+      Host: "{{ openbao_domain }}"
+    method: GET
+    validate_certs: false
+    status_code:
+      - 200  # Initialized, unsealed, and active
+      - 429  # Unsealed and standby
+      - 501  # Not initialized
+      - 503  # Sealed
+    timeout: 5
+  register: openbao_health_result
+  failed_when: false
+
+- name: Test Gitea HTTPS API endpoint
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ gitea_http_port }}/api/v1/version"
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: gitea_health_result
+  failed_when: false
+
+- name: Test Harbor registry HTTPS ping endpoint
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ harbor_https_port }}/api/v2.0/ping"
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: harbor_health_result
+  failed_when: false
+
+- name: Gather Tailscale connection status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status_check
+  changed_when: false
+  failed_when: false
+
+- name: Test Kind clusters status via kubectl
+  ansible.builtin.command: "/usr/local/bin/kubectl --kubeconfig /root/.kube/config --context={{ item.name }} get nodes"
+  loop: "{{ kind_clusters | default([]) }}"
+  register: k8s_clusters_status
+  changed_when: false
+  failed_when: false
+
+- name: Test Kind clusters Nginx reverse proxies with Vault TLS
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443/version"
+    headers:
+      Host: "{{ item.domain }}"
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  loop: "{{ kind_clusters | default([]) }}"
+  register: k8s_proxies_status
+  failed_when: false
+
+- name: Test ArgoCD UI HTTPS endpoint via Nginx
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443"
+    headers:
+      Host: "{{ argocd_domain | default('argocd.ratlab.dev') }}"
+    method: GET
+    validate_certs: false
+    status_code:
+      - 200
+      - 307
+      - 308
+    timeout: 5
+  register: argocd_health_result
+  failed_when: false
+
+- name: Test Gitea admin authentication (admin:admin)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ gitea_http_port }}/api/v1/user"
+    user: admin
+    password: "{{ gitea_admin_password | default('admin') }}"
+    force_basic_auth: true
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: gitea_auth_result
+  failed_when: false
+
+- name: Test Harbor admin authentication (admin:admin)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ harbor_https_port }}/api/v2.0/users/current"
+    user: admin
+    password: "{{ harbor_admin_password | default('admin') }}"
+    force_basic_auth: true
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: harbor_auth_result
+  failed_when: false
+
+- name: Test ArgoCD admin authentication (admin:admin)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443/api/v1/session"
+    headers:
+      Host: "{{ argocd_domain | default('argocd.ratlab.dev') }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      username: "admin"
+      password: "{{ argocd_admin_password | default('admin') }}"
+    method: POST
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: argocd_auth_result
+  failed_when: false
+
+- name: Query ArgoCD GitOps applications status
+  ansible.builtin.command: >-
+    /usr/local/bin/kubectl --kubeconfig /root/.kube/config --context={{ (kind_clusters | selectattr('is_management_cluster', 'defined') | selectattr('is_management_cluster') | first).name | default('tooling-cluster') }}
+    get applications -n {{ argocd_namespace | default('argocd') }} -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.status.sync.status}{" / "}{.status.health.status}{"\n"}{end}'
+  register: argocd_apps_status
+  changed_when: false
+  failed_when: false
+
+- name: Display Comprehensive End-to-End Verification Report
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "                      DEVBOX END-TO-END VERIFICATION                            "
+      - "================================================================================"
+      - "Devbox Hostname:    {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ internal_domain) }}"
+      - "Tailscale IP:       {{ tailscale_node_ip | default('Not active') }}"
+      - "--------------------------------------------------------------------------------"
+      - "DNS Resolution:     {{ 'PASS' if (dns_test_results.results | map(attribute='rc') | max) == 0 else 'CHECK CONFIG' }}"
+      - "Docker Engine:      {{ 'PASS' if docker_test_result.rc == 0 else 'FAIL' }}"
+      - "OpenBao (Vault):    {{ 'ONLINE (HTTP ' ~ openbao_health_result.status ~ ')' if openbao_health_result.status is defined else 'OFFLINE' }}"
+      - "Gitea (Git):        {{ 'ONLINE' if gitea_health_result.status == 200 else 'STARTING / OFFLINE' }}"
+      - "Harbor (Registry):  {{ 'ONLINE' if harbor_health_result.status == 200 else 'STARTING / OFFLINE' }}"
+      - "Kind Clusters:      {{ 'ONLINE (' ~ (kind_clusters | default([]) | length) ~ ' clusters ready)' if (k8s_clusters_status.results | default([]) | map(attribute='rc') | select('ne', 0) | list | length == 0) else 'DEGRADED / CHECK' }}"
+      - "Nginx K8s Proxies:  {{ 'PASS (Vault TLS active)' if (k8s_proxies_status.results | default([]) | map(attribute='status') | select('ne', 200) | list | length == 0) else 'CHECK CONFIG' }}"
+      - "ArgoCD GitOps:      {{ 'ONLINE (HTTP ' ~ argocd_health_result.status ~ ')' if argocd_health_result.status is defined else 'OFFLINE' }}"
+      - "--------------------------------------------------------------------------------"
+      - "Service Authentication (admin / admin):"
+      - "  Gitea (API):       {{ 'PASS (200 OK)' if (gitea_auth_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (gitea_auth_result.status | default('N/A')) ~ ')' }}"
+      - "  Harbor (Registry): {{ 'PASS (200 OK)' if (harbor_auth_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (harbor_auth_result.status | default('N/A')) ~ ')' }}"
+      - "  ArgoCD (Session):  {{ 'PASS (200 OK)' if (argocd_auth_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (argocd_auth_result.status | default('N/A')) ~ ')' }}"
+      - "--------------------------------------------------------------------------------"
+      - "ArgoCD Applications:"
+      - "{{ argocd_apps_status.stdout_lines | default(['No applications found']) }}"
+      - "================================================================================"
+      - "Workstation Access (from your Mac):"
+      - "  Kubeconfig:       export KUBECONFIG={{ playbook_dir }}/../files/kubeconfig"
+      - "  Contexts:         tooling-cluster, app-cluster-1, app-cluster-2"
+      - "  OpenBao UI:       https://{{ openbao_domain }}"
+      - "  Gitea Web:        https://{{ gitea_domain }}:{{ gitea_http_port }}"
+      - "  Harbor Registry:  https://{{ harbor_domain }}"
+      - "  ArgoCD UI:        https://{{ argocd_domain | default('argocd.ratlab.dev') }} (admin / admin)"
+      - "  Docker Context:   docker context create {{ baseline_hostname.split('.')[0] }} --docker 'host=ssh://root@{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}'"
+      - "================================================================================"

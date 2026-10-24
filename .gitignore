@@ -1,0 +1,13 @@
+*.retry
+*.pyc
+__pycache__/
+.DS_Store
+.ansible/
+files/openbao_init.json
+*.key
+*.csr
+files/certs/openbao.crt
+files/certs/intermediate.crt
+files/kubeconfig
+*.kubeconfig
+

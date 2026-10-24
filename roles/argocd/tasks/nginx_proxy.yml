@@ -1,0 +1,56 @@
+---
+# Tasks for configuring Nginx reverse proxy and DNS entry for ArgoCD
+
+- name: Identify management cluster for ArgoCD
+  ansible.builtin.set_fact:
+    mgmt_cluster: "{{ (kind_clusters | selectattr('is_management_cluster', 'defined') | selectattr('is_management_cluster', 'equalto', true) | first) | default(kind_clusters[0]) }}"
+  when: mgmt_cluster is not defined
+
+- name: Set management cluster kubeconfig
+  ansible.builtin.set_fact:
+    argocd_kubeconfig: "/root/.kube/{{ mgmt_cluster.name }}.kubeconfig"
+  when: argocd_kubeconfig is not defined
+
+- name: Query ArgoCD server LoadBalancer IP
+  ansible.builtin.shell: |
+    {{ kind_install_dir | default('/usr/local/bin') }}/kubectl --kubeconfig {{ argocd_kubeconfig }} \
+      get svc argocd-server -n {{ argocd_namespace | default('argocd') }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+  register: queried_argocd_ip
+  changed_when: false
+
+- name: Set argocd_service_ip fact from query
+  ansible.builtin.set_fact:
+    argocd_service_ip: "{{ queried_argocd_ip.stdout | trim }}"
+
+- name: Deploy Nginx reverse proxy configuration for ArgoCD
+  ansible.builtin.template:
+    src: argocd.nginx.conf.j2
+    dest: /etc/nginx/sites-available/argocd.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Enable ArgoCD site in Nginx
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/argocd.conf
+    dest: /etc/nginx/sites-enabled/argocd.conf
+    state: link
+  notify: Reload nginx
+
+- name: Register ArgoCD hostname in dynamic dnsmasq hosts
+  ansible.builtin.copy:
+    dest: /etc/dnsmasq.hosts.d/argocd.hosts
+    content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ argocd_domain }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Ensure ArgoCD domain is resolved locally in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{ argocd_domain }}"
+    state: present
+
+- name: Flush handlers to reload Nginx immediately
+  ansible.builtin.meta: flush_handlers

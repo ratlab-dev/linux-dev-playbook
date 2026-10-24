@@ -1,0 +1,17 @@
+# OpenBao Server Configuration
+# Managed by Ansible (roles/openbao)
+# Bound to localhost (TLS terminated by Nginx on 0.0.0.0:443)
+
+ui = true
+
+storage "pebbledb" {
+  path = "{{ openbao_data_dir }}"
+}
+
+listener "tcp" {
+  address     = "127.0.0.1:{{ openbao_port }}"
+  tls_disable = 1
+}
+
+api_addr     = "https://{{ openbao_domain }}"
+cluster_addr = "http://127.0.0.1:{{ openbao_cluster_port }}"

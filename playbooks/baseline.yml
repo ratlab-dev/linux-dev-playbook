@@ -1,0 +1,6 @@
+---
+- name: Baseline Setup for Linux Devbox
+  hosts: all
+  become: true
+  roles:
+    - baseline

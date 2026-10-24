@@ -1,0 +1,28 @@
+import subprocess, sys, json
+
+kubeconfig = "{{ cluster_kubeconfig }}"
+dns_ip = "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+domain = "{{ internal_domain | default('ratlab.dev') }}"
+
+cmd = ["{{ kind_install_dir }}/kubectl", "--kubeconfig", kubeconfig, "get", "cm", "coredns", "-n", "kube-system", "-o", "jsonpath={.data.Corefile}"]
+corefile = subprocess.check_output(cmd).decode('utf-8')
+
+if domain not in corefile:
+    forward_block = "\n" + domain + """:53 {
+    errors
+    cache 30
+    forward . """ + dns_ip + """
+}
+ratl:53 {
+    errors
+    cache 30
+    forward . """ + dns_ip + """
+}
+"""
+    new_corefile = corefile.strip() + forward_block
+    patch_json = json.dumps({"data": {"Corefile": new_corefile}})
+    subprocess.check_call(["{{ kind_install_dir }}/kubectl", "--kubeconfig", kubeconfig, "patch", "cm", "coredns", "-n", "kube-system", "-p", patch_json])
+    subprocess.check_call(["{{ kind_install_dir }}/kubectl", "--kubeconfig", kubeconfig, "rollout", "restart", "deployment", "coredns", "-n", "kube-system"])
+    print("CoreDNS successfully patched and restarted")
+else:
+    print("CoreDNS already contains forwarder")

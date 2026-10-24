@@ -1,0 +1,42 @@
+# Gitea Configuration File
+# Managed by Ansible (roles/gitea)
+
+APP_NAME = Ratlab Dev Git Service
+RUN_USER = {{ gitea_user }}
+RUN_MODE = prod
+
+[server]
+PROTOCOL         = https
+DOMAIN           = {{ gitea_domain }}
+HTTP_PORT        = {{ gitea_http_port }}
+ROOT_URL         = https://{{ gitea_domain }}:{{ gitea_http_port }}/
+CERT_FILE        = {{ gitea_tls_dir }}/git.crt
+KEY_FILE         = {{ gitea_tls_dir }}/git.key
+DISABLE_SSH      = false
+SSH_PORT         = {{ gitea_ssh_port }}
+SSH_LISTEN_PORT  = {{ gitea_ssh_port }}
+START_SSH_SERVER = true
+OFFLINE_MODE     = true
+
+[database]
+DB_TYPE  = sqlite3
+PATH     = {{ gitea_home }}/data/gitea.db
+
+[repository]
+ROOT = {{ gitea_home }}/repositories
+
+[security]
+INSTALL_LOCK   = true
+SECRET_KEY     = RatlabDevGiteaSecretKeyChangeMeOnFirstRun123
+INTERNAL_TOKEN = RatlabDevGiteaInternalToken123456789
+MIN_PASSWORD_LENGTH = 4
+PASSWORD_COMPLEXITY = off
+
+[service]
+DISABLE_REGISTRATION = false
+REQUIRE_SIGNIN_VIEW  = false
+
+[log]
+MODE      = file
+LEVEL     = info
+ROOT_PATH = /var/log/gitea

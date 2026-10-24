@@ -1,0 +1,26 @@
+---
+# Entry point for role: openbao
+
+- name: Clean up previous manual OpenBao installations
+  ansible.builtin.import_tasks: cleanup.yml
+  tags: [openbao, openbao_cleanup]
+
+- name: Install OpenBao via official APT repository and Nginx
+  ansible.builtin.import_tasks: install.yml
+  tags: [openbao, openbao_install]
+
+- name: Configure TLS and server CSR workflow
+  ansible.builtin.import_tasks: tls.yml
+  tags: [openbao, openbao_tls]
+
+- name: Flush handlers to ensure OpenBao is restarted before PKI initialization
+  ansible.builtin.meta: flush_handlers
+  tags: [openbao, openbao_tls]
+
+- name: Configure Intermediate PKI secrets engine
+  ansible.builtin.import_tasks: pki.yml
+  tags: [openbao, openbao_pki]
+
+- name: Configure Nginx reverse proxy on port 443 with TLS
+  ansible.builtin.import_tasks: nginx.yml
+  tags: [openbao, openbao_nginx]

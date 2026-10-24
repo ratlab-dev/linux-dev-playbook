@@ -1,0 +1,12 @@
+---
+# Defaults for role: harbor
+
+harbor_enable: true
+harbor_version: "v2.11.1"
+harbor_domain: "registry.ratlab.dev"
+harbor_install_dir: "/opt/harbor"
+harbor_data_volume: "/data/harbor"
+harbor_tls_dir: "/etc/harbor/tls"
+harbor_http_port: 8080
+harbor_https_port: 8443
+harbor_admin_password: "admin"

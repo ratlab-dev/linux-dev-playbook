@@ -1,0 +1,148 @@
+---
+# Tasks for establishing Vault / OpenBao Kubernetes Trust & ServiceAccount Policies
+
+- name: Set Vault Kubernetes auth mount facts
+  ansible.builtin.set_fact:
+    cluster_auth_mount: "{{ 'kubernetes' if (current_cluster.name == 'tooling-cluster' or current_cluster.is_management_cluster | default(false)) else ('kubernetes-' ~ current_cluster.name) }}"
+    vault_admin_env:
+      VAULT_ADDR: "http://127.0.0.1:{{ openbao_port | default(8200) }}"
+      VAULT_TOKEN: "{{ openbao_init_data.root_token }}"
+
+- name: Ensure KV-v2 secrets engine is enabled at {{ vault_apps_secrets_mount }}
+  ansible.builtin.shell: |
+    if ! {{ openbao_install_dir }}/bao secrets list -format=json | jq -e '."{{ vault_apps_secrets_mount }}/"' >/dev/null; then
+      {{ openbao_install_dir }}/bao secrets enable -path={{ vault_apps_secrets_mount }} kv-v2
+    fi
+  environment: "{{ vault_admin_env }}"
+  changed_when: false
+
+- name: Create vault-auth ServiceAccount and ClusterRoleBinding in {{ current_cluster.name }}
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create sa vault-auth -n kube-system --dry-run=client -o yaml | \
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create clusterrolebinding vault-auth-delegator \
+      --clusterrole=system:auth-delegator \
+      --serviceaccount=kube-system:vault-auth \
+      --dry-run=client -o yaml | \
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+  changed_when: false
+
+- name: Create long-lived token secret for vault-auth ServiceAccount
+  ansible.builtin.shell: |
+    cat << 'EOF' | {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: vault-auth-token
+      namespace: kube-system
+      annotations:
+        kubernetes.io/service-account.name: vault-auth
+    type: kubernetes.io/service-account-token
+    EOF
+  changed_when: false
+
+- name: Extract cluster CA certificate and Reviewer JWT
+  ansible.builtin.shell: |
+    set -e
+
+    TOKEN=""
+    for i in $(seq 1 10); do
+      RAW=$({{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} get secret vault-auth-token -n kube-system -o jsonpath='{.data.token}' 2>/dev/null || true)
+      if [ -n "$RAW" ]; then
+        TOKEN=$(echo "$RAW" | base64 -d)
+        break
+      fi
+      sleep 1
+    done
+
+    if [ -z "$TOKEN" ]; then
+      TOKEN=$({{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create token vault-auth -n kube-system --duration=87600h)
+    fi
+    echo "$TOKEN" > /tmp/{{ current_cluster.name }}-jwt.token
+
+    CA_CRT=$({{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} get secret vault-auth-token -n kube-system -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d || true)
+    if [ -z "$CA_CRT" ]; then
+      {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} config view --raw --minify --flatten -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > /tmp/{{ current_cluster.name }}-ca.crt
+    else
+      echo "$CA_CRT" > /tmp/{{ current_cluster.name }}-ca.crt
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Check enabled auth methods in OpenBao
+  ansible.builtin.command: "{{ openbao_install_dir }}/bao auth list -format=json"
+  environment: "{{ vault_admin_env }}"
+  register: openbao_auth_list_raw
+  changed_when: false
+
+- name: Enable Kubernetes auth method at {{ cluster_auth_mount }}
+  ansible.builtin.command: "{{ openbao_install_dir }}/bao auth enable -path={{ cluster_auth_mount }} kubernetes"
+  environment: "{{ vault_admin_env }}"
+  when: (cluster_auth_mount ~ '/') not in (openbao_auth_list_raw.stdout | from_json)
+  changed_when: true
+
+- name: Configure Kubernetes auth method in OpenBao
+  ansible.builtin.shell: |
+    {{ openbao_install_dir }}/bao write auth/{{ cluster_auth_mount }}/config \
+      kubernetes_host="https://127.0.0.1:{{ current_cluster.api_port | default(6443) }}" \
+      kubernetes_ca_cert=@/tmp/{{ current_cluster.name }}-ca.crt \
+      token_reviewer_jwt="$(cat /tmp/{{ current_cluster.name }}-jwt.token)" \
+      disable_iss_validation=true
+  environment: "{{ vault_admin_env }}"
+  changed_when: true
+
+- name: Retrieve auth mount accessor for {{ cluster_auth_mount }}
+  ansible.builtin.shell: |
+    {{ openbao_install_dir }}/bao auth list -format=json | jq -r '."{{ cluster_auth_mount }}/".accessor'
+  environment: "{{ vault_admin_env }}"
+  register: auth_accessor_cmd
+  changed_when: false
+
+- name: Set auth accessor fact
+  ansible.builtin.set_fact:
+    cluster_auth_accessor: "{{ auth_accessor_cmd.stdout | trim }}"
+
+- name: Ensure OpenBao policies directory exists
+  ansible.builtin.file:
+    path: /etc/openbao/policies
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Deploy templated policy for ServiceAccount secret isolation
+  ansible.builtin.template:
+    src: k8s-sa-policy.hcl.j2
+    dest: "/etc/openbao/policies/k8s-sa-default-{{ current_cluster.name }}.hcl"
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Upload policy k8s-sa-default-{{ current_cluster.name }} to OpenBao
+  ansible.builtin.command: >-
+    {{ openbao_install_dir }}/bao policy write
+    k8s-sa-default-{{ current_cluster.name }}
+    /etc/openbao/policies/k8s-sa-default-{{ current_cluster.name }}.hcl
+  environment: "{{ vault_admin_env }}"
+  changed_when: true
+
+- name: Configure default wildcard roles for {{ cluster_auth_mount }}
+  ansible.builtin.shell: |
+    for role_name in default sa-read {{ current_cluster.name }}; do
+      {{ openbao_install_dir }}/bao write auth/{{ cluster_auth_mount }}/role/${role_name} \
+        bound_service_account_names="*" \
+        bound_service_account_namespaces="*" \
+        policies="k8s-sa-default-{{ current_cluster.name }}" \
+        ttl="24h"
+    done
+  environment: "{{ vault_admin_env }}"
+  changed_when: true
+
+- name: Clean up temporary token files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/{{ current_cluster.name }}-jwt.token"

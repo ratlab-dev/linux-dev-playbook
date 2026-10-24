@@ -1,0 +1,19 @@
+---
+# Tasks for registering clusters and labels in ArgoCD
+
+- name: Deploy ArgoCD cluster registration script
+  ansible.builtin.template:
+    src: register-clusters.py.j2
+    dest: /tmp/register-clusters.py
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Register clusters and cross-referencing labels in ArgoCD
+  ansible.builtin.command: python3 /tmp/register-clusters.py
+  changed_when: true
+
+- name: Remove temporary registration script
+  ansible.builtin.file:
+    path: /tmp/register-clusters.py
+    state: absent

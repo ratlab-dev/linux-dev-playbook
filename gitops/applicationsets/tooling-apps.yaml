@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tooling-platform-apps
+  namespace: argocd
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchLabels:
+          cluster-role: tooling
+  template:
+    metadata:
+      name: '{{name}}-vault-secret-demo'
+    spec:
+      project: default
+      source:
+        repoURL: https://git.ratlab.dev:3000/admin/gitops.git
+        targetRevision: HEAD
+        path: apps/vault-secret-demo
+      destination:
+        server: '{{server}}'
+        namespace: vault-secret-demo
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

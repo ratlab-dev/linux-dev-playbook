@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ratlab-dns: Dynamic DNS hook and management utility for dnsmasq
+# Managed by Ansible (roles/dns)
+#
+# Usage:
+#   ratlab-dns add <domain> [ip]
+#   ratlab-dns remove <domain>
+#   ratlab-dns list
+#   ratlab-dns reload
+# ==============================================================================
+
+set -euo pipefail
+
+HOSTS_DIR="{{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}"
+mkdir -p "${HOSTS_DIR}"
+
+# Detect default devbox IP (Tailscale IP preferred)
+DEFAULT_IP="{{ tailscale_node_ip | default('') }}"
+if [[ -z "${DEFAULT_IP}" ]]; then
+    DEFAULT_IP="$(tailscale ip -4 2>/dev/null || ip -4 addr show scope global | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)"
+fi
+
+ACTION="${1:-list}"
+
+case "${ACTION}" in
+    add)
+        DOMAIN="${2:-}"
+        IP="${3:-${DEFAULT_IP}}"
+        if [[ -z "${DOMAIN}" || -z "${IP}" ]]; then
+            echo "[ERROR] Usage: ratlab-dns add <domain> [ip]"
+            exit 1
+        fi
+        SLUG=$(echo "${DOMAIN}" | tr -c 'a-zA-Z0-9._-' '_')
+        FILE="${HOSTS_DIR}/${SLUG}.hosts"
+        echo "${IP} ${DOMAIN}" > "${FILE}"
+        echo "[OK] Registered DNS record: ${DOMAIN} -> ${IP} (written to ${FILE})"
+        ;;
+
+    remove|del)
+        DOMAIN="${2:-}"
+        if [[ -z "${DOMAIN}" ]]; then
+            echo "[ERROR] Usage: ratlab-dns remove <domain>"
+            exit 1
+        fi
+        SLUG=$(echo "${DOMAIN}" | tr -c 'a-zA-Z0-9._-' '_')
+        FILE="${HOSTS_DIR}/${SLUG}.hosts"
+        if [[ -f "${FILE}" ]]; then
+            rm -f "${FILE}"
+            echo "[OK] Removed DNS record: ${DOMAIN} (deleted ${FILE})"
+        else
+            echo "[WARN] No explicit record file found for ${DOMAIN} at ${FILE}"
+        fi
+        ;;
+
+    list)
+        echo "================================================================================"
+        echo "               RATLAB.DEV DYNAMIC DNS RECORDS (${HOSTS_DIR})                   "
+        echo "================================================================================"
+        COUNT=0
+        for f in "${HOSTS_DIR}"/*.hosts "${HOSTS_DIR}"/*.conf; do
+            if [[ -f "$f" ]]; then
+                printf "%-30s | %s\n" "$(basename "$f")" "$(cat "$f")"
+                COUNT=$((COUNT + 1))
+            fi
+        done
+        if [[ $COUNT -eq 0 ]]; then
+            echo "No custom records in ${HOSTS_DIR} (all queries fall back to *.{{ dns_domain }})"
+        fi
+        echo "================================================================================"
+        ;;
+
+    reload)
+        if systemctl is-active --quiet dnsmasq; then
+            systemctl kill -s HUP dnsmasq
+            echo "[OK] dnsmasq reloaded successfully (SIGHUP sent)"
+        else
+            echo "[WARN] dnsmasq service is not running"
+        fi
+        ;;
+
+    help|--help|-h)
+        echo "Usage: ratlab-dns {add <domain> [ip]|remove <domain>|list|reload}"
+        ;;
+
+    *)
+        echo "[ERROR] Unknown action: ${ACTION}"
+        echo "Usage: ratlab-dns {add <domain> [ip]|remove <domain>|list|reload}"
+        exit 1
+        ;;
+esac

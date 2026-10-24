@@ -1,0 +1,160 @@
+---
+# Tasks for role: tailscale (Onboarding devbox into Tailnet)
+
+- name: Check if Tailscale is already installed
+  ansible.builtin.command: which tailscale
+  register: tailscale_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Tailscale via official installation script
+  ansible.builtin.shell: |
+    set -o pipefail
+    curl -fsSL https://tailscale.com/install.sh | sh
+  args:
+    executable: /bin/bash
+    creates: /usr/bin/tailscale
+  when: tailscale_check.rc != 0
+
+- name: Ensure tailscaled service is enabled and running
+  ansible.builtin.service:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Check if ufw is installed
+  ansible.builtin.command: which ufw
+  register: ufw_check
+  changed_when: false
+  failed_when: false
+
+- name: Allow traffic on tailscale0 interface in UFW
+  ansible.builtin.command: ufw allow in on tailscale0
+  when: ufw_check.rc == 0
+  changed_when: false
+
+- name: Check Tailscale login status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+
+- name: Parse Tailscale status JSON
+  ansible.builtin.set_fact:
+    tailscale_backend_state: "{{ (tailscale_status.stdout | from_json).BackendState if tailscale_status.rc == 0 else 'NeedsLogin' }}"
+
+- name: Connect and authenticate Tailscale (when auth key is provided)
+  ansible.builtin.command: >-
+    tailscale up
+    --authkey={{ tailscale_auth_key }}
+    --hostname={{ tailscale_hostname | default(baseline_hostname | default(ansible_hostname)) }}
+    {% if tailscale_ssh | default(true) %}--ssh{% endif %}
+    {% if tailscale_accept_routes | default(true) %}--accept-routes{% endif %}
+    {{ tailscale_extra_args | default('') }}
+  when:
+    - tailscale_auth_key is defined
+    - tailscale_auth_key | length > 0
+    - tailscale_backend_state != "Running"
+  register: tailscale_up_authkey
+  changed_when: tailscale_up_authkey.rc == 0
+
+- name: Trigger interactive Tailscale login (when auth key is not provided)
+  ansible.builtin.command: >-
+    tailscale up
+    --hostname={{ tailscale_hostname | default(baseline_hostname | default(ansible_hostname)) }}
+    {% if tailscale_ssh | default(true) %}--ssh{% endif %}
+    {% if tailscale_accept_routes | default(true) %}--accept-routes{% endif %}
+    {{ tailscale_extra_args | default('') }}
+    --timeout=3s
+  when:
+    - (tailscale_auth_key is not defined or tailscale_auth_key | length == 0)
+    - tailscale_backend_state != "Running"
+  failed_when: false
+  changed_when: false
+
+- name: Refresh Tailscale status to get Auth URL
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status_after_up
+  changed_when: false
+  when:
+    - (tailscale_auth_key is not defined or tailscale_auth_key | length == 0)
+    - tailscale_backend_state != "Running"
+
+- name: Extract Auth URL from Tailscale status
+  ansible.builtin.set_fact:
+    tailscale_auth_url: "{{ (tailscale_status_after_up.stdout | from_json).AuthURL | default('') }}"
+  when:
+    - (tailscale_auth_key is not defined or tailscale_auth_key | length == 0)
+    - tailscale_backend_state != "Running"
+    - tailscale_status_after_up.rc is defined
+    - tailscale_status_after_up.rc == 0
+
+- name: Open Tailscale authentication URL in Mac browser
+  ansible.builtin.command: "open '{{ tailscale_auth_url }}'"
+  delegate_to: localhost
+  become: false
+  when:
+    - tailscale_auth_url is defined
+    - tailscale_auth_url | length > 0
+  failed_when: false
+  changed_when: false
+
+- name: Display Tailscale Authentication URL
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "TAILSCALE WEB AUTHENTICATION REQUIRED"
+      - "A browser tab has been opened on your Mac to authorize this machine."
+      - "If it did not open automatically, visit:"
+      - "  {{ tailscale_auth_url }}"
+      - "Waiting up to 120 seconds for approval..."
+      - "================================================================================"
+  when:
+    - tailscale_auth_url is defined
+    - tailscale_auth_url | length > 0
+
+- name: Wait for interactive Tailscale approval to complete
+  ansible.builtin.command: tailscale status --json
+  register: wait_ts_status
+  until: (wait_ts_status.stdout | from_json).BackendState == "Running"
+  retries: 24
+  delay: 5
+  changed_when: false
+  when:
+    - (tailscale_auth_key is not defined or tailscale_auth_key | length == 0)
+    - tailscale_backend_state != "Running"
+    - tailscale_auth_url is defined
+    - tailscale_auth_url | length > 0
+
+- name: Update Tailscale SSH settings (if already running)
+  ansible.builtin.command: >-
+    tailscale set
+    {% if tailscale_ssh | default(true) %}--ssh=true{% else %}--ssh=false{% endif %}
+    {% if tailscale_accept_routes | default(true) %}--accept-routes=true{% endif %}
+  when: tailscale_backend_state == "Running"
+  changed_when: false
+  failed_when: false
+
+- name: Get Tailscale IPv4 address
+  ansible.builtin.command: tailscale ip -4
+  register: tailscale_ip_cmd
+  changed_when: false
+  failed_when: false
+
+- name: Set tailscale_node_ip fact
+  ansible.builtin.set_fact:
+    tailscale_node_ip: "{{ tailscale_ip_cmd.stdout.strip() }}"
+  when:
+    - tailscale_ip_cmd.rc == 0
+    - tailscale_ip_cmd.stdout | length > 0
+
+- name: Display Tailscale onboarding summary
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "                       TAILSCALE ONBOARDING COMPLETE                            "
+      - "================================================================================"
+      - "Tailscale Status: {{ tailscale_backend_state | default('Unknown') }}"
+      - "Tailscale IP:     {{ tailscale_ip_cmd.stdout | default('Not connected') }}"
+      - "Peer Access:      ssh root@{{ tailscale_ip_cmd.stdout | default(ansible_hostname) }}"
+      - "================================================================================"

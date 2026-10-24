@@ -1,0 +1,59 @@
+---
+# Tasks for Nginx Reverse Proxy (TLS termination on 0.0.0.0:443 for OpenBao)
+
+- name: Deploy Nginx reverse proxy site configuration for OpenBao
+  ansible.builtin.template:
+    src: nginx_vault.conf.j2
+    dest: /etc/nginx/sites-available/vault.ratlab.dev.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Enable OpenBao Nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/vault.ratlab.dev.conf
+    dest: /etc/nginx/sites-enabled/vault.ratlab.dev.conf
+    state: link
+  notify: Reload nginx
+
+- name: Remove default Nginx site if enabled
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: Test Nginx configuration validity
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Ensure Nginx service is enabled and restarted
+  ansible.builtin.service:
+    name: nginx
+    enabled: true
+    state: restarted
+
+- name: Allow Nginx HTTP (80) and HTTPS (443) ports in UFW
+  block:
+    - name: Check if ufw is installed
+      ansible.builtin.command: which ufw
+      register: ufw_nginx_check
+      changed_when: false
+      failed_when: false
+
+    - name: Allow HTTP and HTTPS traffic in UFW
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "ufw allow 80/tcp"
+        - "ufw allow 443/tcp"
+      when: ufw_nginx_check.rc == 0
+      changed_when: false
+
+- name: Register OpenBao DNS entry in ratlab dynamic DNS
+  ansible.builtin.copy:
+    dest: /etc/dnsmasq.hosts.d/openbao.hosts
+    content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ openbao_domain }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when: openbao_domain is defined

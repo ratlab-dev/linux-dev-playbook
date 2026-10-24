@@ -1,0 +1,21 @@
+# OpenBao PKI Policy for Ratlab Services
+# Grants permission to issue certificates for *.{{ internal_domain }}
+# Explicitly denies issuing for {{ openbao_domain }}
+
+path "{{ openbao_pki_mount }}/issue/{{ openbao_pki_role }}" {
+  capabilities = ["create", "update"]
+  allowed_parameters = {
+    "common_name" = ["*.{{ internal_domain }}"]
+  }
+  denied_parameters = {
+    "common_name" = ["{{ openbao_domain }}"]
+  }
+}
+
+path "{{ openbao_pki_mount }}/certs" {
+  capabilities = ["list"]
+}
+
+path "{{ openbao_pki_mount }}/cert/*" {
+  capabilities = ["read"]
+}

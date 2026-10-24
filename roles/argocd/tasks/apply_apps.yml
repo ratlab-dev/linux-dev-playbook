@@ -1,0 +1,83 @@
+---
+# Tasks for applying initial GitOps ApplicationSets and deploying MetalLB via ArgoCD
+
+- name: Identify management cluster for ArgoCD
+  ansible.builtin.set_fact:
+    mgmt_cluster: "{{ (kind_clusters | selectattr('is_management_cluster', 'defined') | selectattr('is_management_cluster', 'equalto', true) | first) | default(kind_clusters[0]) }}"
+  when: mgmt_cluster is not defined
+
+- name: Set management cluster kubeconfig
+  ansible.builtin.set_fact:
+    argocd_kubeconfig: "/root/.kube/{{ mgmt_cluster.name }}.kubeconfig"
+  when: argocd_kubeconfig is not defined
+
+- name: Apply ApplicationSets from GitOps repository
+  ansible.builtin.shell: |
+    if [ -d /tmp/gitops-init/applicationsets ]; then
+      {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} apply -f /tmp/gitops-init/applicationsets/ -n {{ argocd_namespace }}
+    fi
+  changed_when: true
+
+- name: Wait for cluster-namespaces ApplicationSet to generate tooling-cluster-namespaces
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      if {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} get application tooling-cluster-namespaces >/dev/null 2>&1; then
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+          patch application tooling-cluster-namespaces --type merge -p '{"operation":{"sync":{"prune":true}}}' 2>/dev/null || true
+        break
+      fi
+      sleep 2
+    done
+  changed_when: false
+
+- name: Wait for metallb-system namespace to be created by ArgoCD
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }}
+    get ns metallb-system
+  register: metallb_ns_wait
+  until: metallb_ns_wait.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
+- name: Trigger initial sync for metallb-engine in ArgoCD
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+      patch application metallb-engine --type merge -p '{"operation":{"sync":{"prune":true}}}' 2>/dev/null || true
+  changed_when: false
+
+- name: Wait for metallb-engine ArgoCD application to become Healthy
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }}
+    wait --for=jsonpath='{.status.health.status}'=Healthy application/metallb-engine --timeout=180s
+  changed_when: false
+
+- name: Trigger initial sync for metallb-config in ArgoCD
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+      patch application metallb-config --type merge -p '{"operation":{"sync":{"prune":true}}}' 2>/dev/null || true
+  changed_when: false
+
+- name: Wait for metallb-config ArgoCD application to become Healthy
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }}
+    wait --for=jsonpath='{.status.health.status}'=Healthy application/metallb-config --timeout=120s
+  changed_when: false
+
+- name: Retrieve ArgoCD server LoadBalancer IP (End-to-End MetalLB Verification)
+  ansible.builtin.shell: |
+    for i in $(seq 1 40); do
+      IP=$({{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} get svc argocd-server -n {{ argocd_namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+      if [ -n "$IP" ]; then
+        echo "$IP"
+        exit 0
+      fi
+      sleep 3
+    done
+    exit 1
+  register: argocd_lb_ip_raw
+  changed_when: false
+
+- name: Set ArgoCD LoadBalancer IP fact
+  ansible.builtin.set_fact:
+    argocd_service_ip: "{{ argocd_lb_ip_raw.stdout | trim }}"

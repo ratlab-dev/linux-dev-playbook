@@ -1,0 +1,42 @@
+---
+- name: Provision and Configure Linux Devbox
+  hosts: devbox
+  become: true
+  roles:
+    - role: baseline
+      tags: [baseline]
+
+    - role: tailscale
+      tags: [tailscale]
+      when: tailscale_auth_key is defined or tailscale_ssh | default(true)
+
+    - role: dns
+      tags: [dns]
+      when: dns_server_enable | default(true) | bool
+
+    - role: docker
+      tags: [docker]
+      when: docker_enable | default(true) | bool
+
+    - role: openbao
+      tags: [openbao]
+      when: openbao_enable | default(true) | bool
+
+    - role: gitea
+      tags: [gitea]
+      when: gitea_enable | default(true) | bool
+
+    - role: harbor
+      tags: [harbor]
+      when: harbor_enable | default(true) | bool
+
+    - role: kind_cluster
+      tags: [kind, kind_cluster]
+      when: kind_enable | default(true) | bool
+
+    - role: argocd
+      tags: [argocd]
+      when: argocd_enable | default(true) | bool
+
+    - role: verify
+      tags: [verify]

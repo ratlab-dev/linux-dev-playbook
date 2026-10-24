@@ -1,0 +1,98 @@
+---
+# Defaults for role: baseline
+
+internal_domain: "ratlab.dev"
+baseline_hostname: "devbox.ratlab.dev"
+
+# SSH Configuration
+baseline_ssh_port: 22
+baseline_ssh_permit_root_login: "prohibit-password"
+baseline_ssh_password_authentication: "yes"
+baseline_ssh_pubkey_authentication: "yes"
+baseline_root_authorized_keys: []
+
+# Custom CAs
+baseline_custom_cas: []
+
+# Default packages for Debian/Ubuntu
+baseline_system_packages_debian:
+  - curl
+  - wget
+  - git
+  - tmux
+  - htop
+  - iotop
+  - iftop
+  - jq
+  - unzip
+  - tar
+  - vim
+  - nano
+  - rsync
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - ufw
+  - iptables
+  - tcpdump
+  - iputils-ping
+  - traceroute
+  - net-tools
+  - dnsutils
+  - fzf
+  - bash-completion
+  - python3
+  - python3-pip
+  - python3-apt
+
+baseline_system_packages_redhat:
+  - curl
+  - wget
+  - git
+  - tmux
+  - htop
+  - iotop
+  - iftop
+  - jq
+  - unzip
+  - tar
+  - vim
+  - nano
+  - rsync
+  - ca-certificates
+  - gnupg2
+  - firewalld
+  - iptables
+  - tcpdump
+  - iputils
+  - traceroute
+  - net-tools
+  - bind-utils
+  - python3
+  - python3-pip
+
+baseline_system_packages_arch:
+  - curl
+  - wget
+  - git
+  - tmux
+  - htop
+  - iotop
+  - iftop
+  - jq
+  - unzip
+  - tar
+  - vim
+  - nano
+  - rsync
+  - ca-certificates
+  - gnupg
+  - ufw
+  - iptables
+  - tcpdump
+  - iputils
+  - traceroute
+  - net-tools
+  - bind
+  - python
+  - python-pip

@@ -1,0 +1,30 @@
+# Managed by Ansible (roles/kind_cluster)
+# Vault Policy granting ServiceAccounts default read access to:
+# {{ vault_apps_secrets_mount }}/<namespace>_<sa_name>
+
+# KV v2 secrets data
+path "{{ vault_apps_secrets_mount }}/data/{% raw %}{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_namespace}}_{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_name}}{% endraw %}" {
+  capabilities = ["read", "list"]
+}
+
+path "{{ vault_apps_secrets_mount }}/data/{% raw %}{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_namespace}}_{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_name}}/*{% endraw %}" {
+  capabilities = ["read", "list"]
+}
+
+# KV v2 secrets metadata
+path "{{ vault_apps_secrets_mount }}/metadata/{% raw %}{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_namespace}}_{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_name}}{% endraw %}" {
+  capabilities = ["read", "list"]
+}
+
+path "{{ vault_apps_secrets_mount }}/metadata/{% raw %}{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_namespace}}_{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_name}}/*{% endraw %}" {
+  capabilities = ["read", "list"]
+}
+
+# Direct / KV v1 paths
+path "{{ vault_apps_secrets_mount }}/{% raw %}{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_namespace}}_{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_name}}{% endraw %}" {
+  capabilities = ["read", "list"]
+}
+
+path "{{ vault_apps_secrets_mount }}/{% raw %}{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_namespace}}_{{identity.entity.aliases.{% endraw %}{{ cluster_auth_accessor }}{% raw %}.metadata.service_account_name}}/*{% endraw %}" {
+  capabilities = ["read", "list"]
+}

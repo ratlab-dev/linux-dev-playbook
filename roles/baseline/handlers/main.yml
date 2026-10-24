@@ -1,0 +1,16 @@
+---
+# Handlers for role: baseline
+
+- name: Restart ssh service (Debian)
+  ansible.builtin.service:
+    name: ssh
+    state: restarted
+  when: ansible_os_family == 'Debian'
+  listen: "restart ssh"
+
+- name: Restart sshd service (RedHat/Arch)
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
+  when: ansible_os_family in ['RedHat', 'Archlinux']
+  listen: "restart ssh"

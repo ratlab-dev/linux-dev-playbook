@@ -1,0 +1,167 @@
+---
+# Tasks for role: gitea (Self-hosted Git with persistent volume & systemd)
+
+- name: Create git system group
+  ansible.builtin.group:
+    name: "{{ gitea_group }}"
+    system: true
+    state: present
+
+- name: Create git system user
+  ansible.builtin.user:
+    name: "{{ gitea_user }}"
+    group: "{{ gitea_group }}"
+    system: true
+    shell: /bin/bash
+    home: "{{ gitea_home }}"
+    create_home: true
+    state: present
+
+- name: Create persistent storage and config directories for Gitea
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ gitea_user }}"
+    group: "{{ gitea_group }}"
+    mode: '0750'
+  loop:
+    - "{{ gitea_home }}"
+    - "{{ gitea_home }}/data"
+    - "{{ gitea_home }}/repositories"
+    - "{{ gitea_custom }}"
+    - "{{ gitea_tls_dir }}"
+    - "/var/log/gitea"
+
+- name: Check if Gitea binary is already installed
+  ansible.builtin.command: /usr/local/bin/gitea --version
+  register: gitea_installed_check
+  changed_when: false
+  failed_when: false
+
+- name: Determine system architecture for Gitea download
+  ansible.builtin.set_fact:
+    gitea_arch: "{{ {'x86_64': 'linux-amd64', 'amd64': 'linux-amd64', 'aarch64': 'linux-arm64', 'arm64': 'linux-arm64'}[ansible_architecture] | default('linux-amd64') }}"
+
+- name: Download and install Gitea binary
+  ansible.builtin.get_url:
+    url: "https://github.com/go-gitea/gitea/releases/download/v{{ gitea_version }}/gitea-{{ gitea_version }}-{{ gitea_arch | trim }}"
+    dest: /usr/local/bin/gitea
+    owner: root
+    group: root
+    mode: '0755'
+    timeout: 300
+  when: gitea_installed_check.rc != 0 or gitea_version not in gitea_installed_check.stdout
+
+- name: Provision wildcard TLS certificate for Gitea
+  block:
+    - name: Check if central wildcard certificate exists
+      ansible.builtin.stat:
+        path: /etc/ssl/certs/ratlab_wildcard.crt
+      register: central_wildcard_stat_gitea
+
+    - name: Issue wildcard TLS certificate via OpenBao Intermediate PKI if missing
+      ansible.builtin.command: >-
+        /usr/local/bin/issue-service-cert "*.{{ internal_domain | default('ratlab.dev') }}" {{ gitea_tls_dir }}/git.crt {{ gitea_tls_dir }}/git.key
+      when: not central_wildcard_stat_gitea.stat.exists
+      changed_when: true
+
+    - name: Deploy central wildcard certificate to Gitea TLS directory
+      ansible.builtin.copy:
+        src: /etc/ssl/certs/ratlab_wildcard.crt
+        dest: "{{ gitea_tls_dir }}/git.crt"
+        remote_src: true
+        owner: "{{ gitea_user }}"
+        group: "{{ gitea_group }}"
+        mode: '0640'
+      when: central_wildcard_stat_gitea.stat.exists
+
+    - name: Deploy central wildcard key to Gitea TLS directory
+      ansible.builtin.copy:
+        src: /etc/ssl/private/ratlab_wildcard.key
+        dest: "{{ gitea_tls_dir }}/git.key"
+        remote_src: true
+        owner: "{{ gitea_user }}"
+        group: "{{ gitea_group }}"
+        mode: '0640'
+      when: central_wildcard_stat_gitea.stat.exists
+
+    - name: Secure Gitea TLS permissions
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: "{{ gitea_user }}"
+        group: "{{ gitea_group }}"
+        mode: '0640'
+      loop:
+        - "{{ gitea_tls_dir }}/git.crt"
+        - "{{ gitea_tls_dir }}/git.key"
+
+- name: Deploy Gitea configuration file (app.ini)
+  ansible.builtin.template:
+    src: app.ini.j2
+    dest: "{{ gitea_custom }}/app.ini"
+    owner: "{{ gitea_user }}"
+    group: "{{ gitea_group }}"
+    mode: '0640'
+  notify: Restart gitea
+
+- name: Deploy Gitea systemd service unit
+  ansible.builtin.template:
+    src: gitea.service.j2
+    dest: /etc/systemd/system/gitea.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart gitea
+
+- name: Ensure Gitea service is enabled and started
+  ansible.builtin.service:
+    name: gitea
+    enabled: true
+    state: started
+
+- name: Wait for Gitea HTTP service to be responding
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ gitea_http_port }}/api/v1/version"
+    method: GET
+    validate_certs: false
+    status_code: 200
+  register: gitea_ready
+  until: gitea_ready.status == 200
+  retries: 30
+  delay: 2
+
+- name: Allow Gitea ports (HTTP 3000, SSH 2222) in UFW if installed
+  block:
+    - name: Check if ufw is installed
+      ansible.builtin.command: which ufw
+      register: ufw_gitea_check
+      changed_when: false
+      failed_when: false
+
+    - name: Allow Gitea traffic in UFW
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "ufw allow {{ gitea_http_port }}/tcp"
+        - "ufw allow {{ gitea_ssh_port }}/tcp"
+      when: ufw_gitea_check.rc == 0
+      changed_when: false
+
+- name: Register Gitea DNS entry in ratlab dynamic DNS
+  ansible.builtin.copy:
+    dest: /etc/dnsmasq.hosts.d/gitea.hosts
+    content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ gitea_domain | default('git.' ~ internal_domain) }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when: gitea_domain is defined or internal_domain is defined
+
+- name: Ensure Gitea admin user exists with admin credentials
+  ansible.builtin.shell: |
+    if ! su - {{ gitea_user }} -c '/usr/local/bin/gitea admin user list --config {{ gitea_custom }}/app.ini' | grep -qw admin; then
+      su - {{ gitea_user }} -c '/usr/local/bin/gitea admin user create --username administrator --password admin --email admin@{{ internal_domain | default("ratlab.dev") }} --admin --must-change-password=false --config {{ gitea_custom }}/app.ini'
+      python3 -c "import sqlite3; conn = sqlite3.connect('{{ gitea_home }}/data/gitea.db'); c = conn.cursor(); c.execute(\"UPDATE user SET name = 'admin', lower_name = 'admin', must_change_password = 0 WHERE name = 'administrator'\"); conn.commit(); conn.close()"
+    else
+      su - {{ gitea_user }} -c '/usr/local/bin/gitea admin user change-password --username admin --password admin --config {{ gitea_custom }}/app.ini'
+      python3 -c "import sqlite3; conn = sqlite3.connect('{{ gitea_home }}/data/gitea.db'); c = conn.cursor(); c.execute(\"UPDATE user SET must_change_password = 0 WHERE name = 'admin'\"); conn.commit(); conn.close()"
+    fi
+  changed_when: false

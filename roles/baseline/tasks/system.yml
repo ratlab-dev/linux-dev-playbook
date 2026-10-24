@@ -1,0 +1,37 @@
+---
+# System tooling and configuration tasks
+
+- name: Set system hostname
+  ansible.builtin.hostname:
+    name: "{{ baseline_hostname }}"
+  when: baseline_hostname is defined and baseline_hostname | length > 0
+
+- name: Ensure /etc/hosts has local domain entry
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s+'
+    line: "127.0.1.1 {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ internal_domain) }} {{ baseline_hostname.split('.')[0] }}"
+    state: present
+  when: baseline_hostname is defined and internal_domain is defined
+
+- name: Update apt cache and install baseline packages (Debian family)
+  ansible.builtin.apt:
+    name: "{{ baseline_system_packages_debian }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == 'Debian'
+
+- name: Install baseline packages (RedHat family)
+  ansible.builtin.dnf:
+    name: "{{ baseline_system_packages_redhat }}"
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'RedHat'
+
+- name: Install baseline packages (Arch family)
+  ansible.builtin.pacman:
+    name: "{{ baseline_system_packages_arch }}"
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Archlinux'

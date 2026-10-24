@@ -1,0 +1,11 @@
+---
+# Defaults for role: dns (dnsmasq)
+
+dns_server_enable: true
+dns_upstream_servers:
+  - "1.1.1.1"
+  - "8.8.8.8"
+
+dns_domain: "{{ internal_domain | default('ratlab.dev') }}"
+dns_hosts_dir: "/etc/dnsmasq.hosts.d"
+dns_custom_records: []

@@ -1,0 +1,30 @@
+# ==============================================================================
+# Base values for MetalLB Helm Chart (Layer 1: Engine & CRDs)
+# ==============================================================================
+
+controller:
+  enabled: true
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+    requests:
+      cpu: 50m
+      memory: 50Mi
+
+speaker:
+  enabled: true
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+    requests:
+      cpu: 50m
+      memory: 50Mi
+
+crds:
+  enabled: true
+  validationFailurePolicy: Fail
+
+prometheus:
+  metricsPort: 7472

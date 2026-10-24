@@ -1,0 +1,476 @@
+---
+# ==============================================================================
+# Playbook: Devbox Cleanup & Reversal (playbooks/cleanup.yml)
+#
+# Cleans up and uninstalls all services, systemd units, binaries, apt packages,
+# and reverse proxy configurations created by Ansible on the devbox.
+#
+# REVERSE order of creation:
+#   ArgoCD/Kind -> Harbor -> Gitea -> OpenBao -> Nginx -> Docker -> DNS -> Hosts.
+#
+# DATA PRESERVATION:
+#   Persistent data directories (/data/harbor, /var/lib/gitea, /var/lib/openbao,
+#   /root/.kube, etc.) are PRESERVED by default.
+#   To purge data explicitly, pass: -e "cleanup_data=true" or --tags data.
+#
+# TAILSCALE & SSH PRESERVATION:
+#   Tailscale mesh and SSH access are explicitly PRESERVED to maintain remote
+#   control. They require explicit tags: --tags tailscale or --tags ssh.
+#
+# Usage:
+#   # Standard cleanup (removes tools, binaries, services, packages; preserves data):
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml
+#
+#   # Full cleanup INCLUDING persistent data:
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml -e "cleanup_data=true"
+#
+#   # Step-by-step cleanup via tags:
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags k8s
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags harbor
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags gitea
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags openbao
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags nginx
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags docker
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags dns
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags packages
+#   ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml --tags data
+# ==============================================================================
+
+- name: Revert and Clean Up Linux Devbox
+  hosts: devbox
+  become: true
+  gather_facts: false
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # STEP 1: Revert ArgoCD & Kind Clusters
+    # --------------------------------------------------------------------------
+    - name: "[Step 1] Delete Kind Kubernetes clusters"
+      ansible.builtin.shell: |
+        for cluster in app-cluster-2 app-cluster-1 tooling-cluster; do
+          if which kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -q "^${cluster}\$"; then
+            kind delete cluster --name "${cluster}" || true
+          fi
+        done
+      changed_when: true
+      tags: [argocd, kind, kind_cluster, k8s, cleanup]
+
+    - name: "[Step 1] Remove temporary GitOps caches and cluster configs"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/gitops-init
+        - /etc/kubernetes/kind
+        - /etc/kubernetes/tls
+      tags: [argocd, kind, kind_cluster, k8s, cleanup]
+
+    - name: "[Step 1] Remove Kubernetes binaries (kind, kubectl, helm, kubectx, kubens)"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ kind_install_dir | default('/usr/local/bin') }}/kind"
+        - "{{ kind_install_dir | default('/usr/local/bin') }}/kubectl"
+        - "{{ kind_install_dir | default('/usr/local/bin') }}/helm"
+        - "{{ kind_install_dir | default('/usr/local/bin') }}/kubectx"
+        - "{{ kind_install_dir | default('/usr/local/bin') }}/kubens"
+      when: cleanup_binaries | default(true) | bool | default(true) | bool
+      tags: [argocd, kind, kind_cluster, k8s, binaries, cleanup]
+
+    - name: "[Step 1] Remove Nginx reverse proxy configs for Kind and ArgoCD"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx/sites-enabled/k8s-app-cluster-1.conf
+        - /etc/nginx/sites-available/k8s-app-cluster-1.conf
+        - /etc/nginx/sites-enabled/k8s-app-cluster-2.conf
+        - /etc/nginx/sites-available/k8s-app-cluster-2.conf
+        - /etc/nginx/sites-enabled/k8s-tooling-cluster.conf
+        - /etc/nginx/sites-available/k8s-tooling-cluster.conf
+        - /etc/nginx/sites-enabled/k8s-tooling.conf
+        - /etc/nginx/sites-available/k8s-tooling.conf
+        - /etc/nginx/sites-enabled/argocd.conf
+        - /etc/nginx/sites-available/argocd.conf
+        - /etc/nginx/conf.d/websocket-map.conf
+        - /etc/dnsmasq.hosts.d/argocd.hosts
+      tags: [argocd, kind, kind_cluster, k8s, cleanup]
+
+    - name: "[Step 1] [DATA] Purge Kubeconfig and persistent Kubernetes data"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /root/.kube
+        - /etc/kubernetes
+      when: cleanup_data | default(false) | bool
+      tags: [never, data, k8s_data]
+
+    # --------------------------------------------------------------------------
+    # STEP 2: Revert Harbor Container Registry
+    # --------------------------------------------------------------------------
+    - name: "[Step 2] Stop and disable Harbor systemd service"
+      ansible.builtin.systemd:
+        name: harbor
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [harbor, systemd, cleanup]
+
+    - name: "[Step 2] Tear down Harbor Docker Compose stack and containers"
+      ansible.builtin.shell: |
+        if [ -d /opt/harbor ] && which docker >/dev/null 2>&1; then
+          cd /opt/harbor && docker compose down --remove-orphans || true
+        fi
+      changed_when: true
+      failed_when: false
+      tags: [harbor, cleanup]
+
+    - name: "[Step 2] Remove Harbor systemd unit and reload daemon"
+      ansible.builtin.file:
+        path: /etc/systemd/system/harbor.service
+        state: absent
+      notify: Reload systemd daemon
+      tags: [harbor, systemd, cleanup]
+
+    - name: "[Step 2] Remove Harbor installation files and scripts"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/harbor
+        - /etc/harbor
+        - /var/log/harbor
+        - /etc/dnsmasq.hosts.d/harbor.hosts
+        - /usr/local/bin/upload-metallb-chart-to-harbor
+        - /usr/local/bin/upload-argocd-chart-to-harbor
+      tags: [harbor, binaries, cleanup]
+
+    - name: "[Step 2] [DATA] Purge Harbor persistent registry storage"
+      ansible.builtin.file:
+        path: /data/harbor
+        state: absent
+      when: cleanup_data | default(false) | bool
+      tags: [never, data, harbor_data]
+
+    # --------------------------------------------------------------------------
+    # STEP 3: Revert Gitea Service
+    # --------------------------------------------------------------------------
+    - name: "[Step 3] Stop and disable Gitea systemd service"
+      ansible.builtin.systemd:
+        name: gitea
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [gitea, systemd, cleanup]
+
+    - name: "[Step 3] Remove Gitea systemd unit and reload daemon"
+      ansible.builtin.file:
+        path: /etc/systemd/system/gitea.service
+        state: absent
+      notify: Reload systemd daemon
+      tags: [gitea, systemd, cleanup]
+
+    - name: "[Step 3] Remove Gitea binary"
+      ansible.builtin.file:
+        path: /usr/local/bin/gitea
+        state: absent
+      when: cleanup_binaries | default(true) | bool
+      tags: [gitea, binaries, cleanup]
+
+    - name: "[Step 3] Remove Gitea configuration and host records"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/gitea
+        - /var/log/gitea
+        - /etc/dnsmasq.hosts.d/gitea.hosts
+      tags: [gitea, cleanup]
+
+    - name: "[Step 3] Remove git system user"
+      ansible.builtin.user:
+        name: git
+        state: absent
+        remove: false
+      failed_when: false
+      tags: [gitea, cleanup]
+
+    - name: "[Step 3] [DATA] Purge Gitea persistent repositories and database"
+      ansible.builtin.file:
+        path: /var/lib/gitea
+        state: absent
+      when: cleanup_data | default(false) | bool
+      tags: [never, data, gitea_data]
+
+    # --------------------------------------------------------------------------
+    # STEP 4: Revert OpenBao (Vault) & PKI
+    # --------------------------------------------------------------------------
+    - name: "[Step 4] Stop and disable OpenBao systemd service"
+      ansible.builtin.systemd:
+        name: openbao
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [openbao, vault, pki, systemd, cleanup]
+
+    - name: "[Step 4] Kill any lingering OpenBao processes"
+      ansible.builtin.shell: |
+        pkill -9 -f "bao server" 2>/dev/null || pkill -9 bao 2>/dev/null || true
+      changed_when: false
+      failed_when: false
+      tags: [openbao, vault, pki, cleanup]
+
+    - name: "[Step 4] Remove OpenBao systemd unit and Nginx proxy"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/openbao.service
+        - /etc/nginx/sites-enabled/vault.ratlab.dev.conf
+        - /etc/nginx/sites-available/vault.ratlab.dev.conf
+        - /etc/dnsmasq.hosts.d/openbao.hosts
+      notify: Reload systemd daemon
+      tags: [openbao, vault, pki, systemd, cleanup]
+
+    - name: "[Step 4] Remove OpenBao binaries and helper utilities"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/bin/bao
+        - /usr/bin/vault
+        - /usr/local/bin/issue-service-cert
+      when: cleanup_binaries | default(true) | bool
+      tags: [openbao, vault, pki, binaries, cleanup]
+
+    - name: "[Step 4] Uninstall OpenBao package and remove APT repository"
+      ansible.builtin.shell: |
+        apt-get purge -y openbao 2>/dev/null || true
+        rm -f /etc/apt/sources.list.d/openbao.sources /etc/apt/sources.list.d/openbao.list /etc/apt/keyrings/openbao.asc
+      when: cleanup_packages | default(true) | bool
+      changed_when: true
+      tags: [openbao, vault, packages, cleanup]
+
+    - name: "[Step 4] Remove OpenBao configuration and PKI certificates"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/openbao
+        - /etc/ssl/certs/ratlab_wildcard.crt
+        - /etc/ssl/private/ratlab_wildcard.key
+      tags: [openbao, vault, pki, cleanup]
+
+    - name: "[Step 4] Remove openbao system user"
+      ansible.builtin.user:
+        name: openbao
+        state: absent
+        remove: false
+      failed_when: false
+      tags: [openbao, vault, pki, cleanup]
+
+    - name: "[Step 4] [DATA] Purge OpenBao persistent data and root token"
+      ansible.builtin.shell: |
+        rm -rf /var/lib/openbao /root/.openbao_init.json
+      when: cleanup_data | default(false) | bool
+      changed_when: true
+      tags: [never, data, openbao_data]
+
+    - name: "[Step 4] [DATA] Clean up local controller OpenBao init token"
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../files/openbao_init.json"
+        state: absent
+      delegate_to: localhost
+      become: false
+      when: cleanup_data | default(false) | bool
+      tags: [never, data, openbao_data]
+
+    # --------------------------------------------------------------------------
+    # STEP 5: Revert Nginx Reverse Proxy
+    # --------------------------------------------------------------------------
+    - name: "[Step 5] Stop and disable Nginx service"
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [nginx, systemd, cleanup]
+
+    - name: "[Step 5] Remove custom Nginx configuration files"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx/sites-enabled/argocd.conf
+        - /etc/nginx/sites-available/argocd.conf
+        - /etc/nginx/sites-enabled/vault.ratlab.dev.conf
+        - /etc/nginx/sites-available/vault.ratlab.dev.conf
+        - /etc/nginx/conf.d/websocket-map.conf
+      tags: [nginx, cleanup]
+
+    - name: "[Step 5] Uninstall and purge Nginx package"
+      ansible.builtin.shell: |
+        apt-get purge -y nginx nginx-common nginx-core 2>/dev/null || true
+        rm -rf /etc/nginx
+      when: cleanup_packages | default(true) | bool
+      changed_when: true
+      tags: [nginx, packages, cleanup]
+
+    # --------------------------------------------------------------------------
+    # STEP 6: Revert Docker CE & Containers
+    # --------------------------------------------------------------------------
+    - name: "[Step 6] Stop and remove all running Docker containers"
+      ansible.builtin.shell: |
+        if which docker >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null; then
+          CONTAINERS=$(docker ps -aq 2>/dev/null || true)
+          if [ -n "$CONTAINERS" ]; then
+            docker rm -f $CONTAINERS 2>/dev/null || true
+          fi
+          docker network prune -f 2>/dev/null || true
+        fi
+      changed_when: true
+      failed_when: false
+      tags: [docker, cleanup]
+
+    - name: "[Step 6] Stop and disable Docker and Containerd services"
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - docker.service
+        - docker.socket
+        - containerd.service
+      failed_when: false
+      tags: [docker, systemd, cleanup]
+
+    - name: "[Step 6] Uninstall and purge Docker CE packages and APT repo"
+      ansible.builtin.shell: |
+        apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>/dev/null || true
+        rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc /etc/docker/daemon.json
+      when: cleanup_packages | default(true) | bool
+      changed_when: true
+      tags: [docker, packages, cleanup]
+
+    - name: "[Step 6] [DATA] Purge Docker volumes and storage data"
+      ansible.builtin.shell: |
+        rm -rf /var/lib/docker /var/lib/containerd
+      when: cleanup_data | default(false) | bool
+      changed_when: true
+      tags: [never, data, docker_data]
+
+    # --------------------------------------------------------------------------
+    # STEP 7: Revert DNS Server (dnsmasq)
+    # --------------------------------------------------------------------------
+    - name: "[Step 7] Stop and disable dnsmasq service"
+      ansible.builtin.systemd:
+        name: dnsmasq
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [dns, dnsmasq, systemd, cleanup]
+
+    - name: "[Step 7] Remove dnsmasq configuration files, CLI utility and custom hosts"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/dnsmasq.conf
+        - /etc/dnsmasq.d/10-ratlab.conf
+        - /etc/dnsmasq.hosts.d
+        - /usr/local/bin/ratlab-dns
+        - /etc/systemd/resolved.conf.d/no-stub.conf
+      tags: [dns, dnsmasq, binaries, cleanup]
+
+    - name: "[Step 7] Uninstall and purge dnsmasq package"
+      ansible.builtin.shell: |
+        apt-get purge -y dnsmasq 2>/dev/null || true
+      when: cleanup_packages | default(true) | bool
+      changed_when: true
+      tags: [dns, dnsmasq, packages, cleanup]
+
+    - name: "[Step 7] Ensure systemd-resolved DNSStubListener is restored and active"
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        state: restarted
+        enabled: true
+      failed_when: false
+      tags: [dns, dnsmasq, cleanup]
+
+    # --------------------------------------------------------------------------
+    # STEP 8: Revert Host records (/etc/hosts)
+    # --------------------------------------------------------------------------
+    - name: "[Step 8] Clean custom domain entries from /etc/hosts"
+      ansible.builtin.shell: |
+        if [ -f /etc/hosts ]; then
+          sed -i '/ratlab\.dev/d' /etc/hosts
+          sed -i '/\.k8s\.ratl/d' /etc/hosts
+          sed -i '/vault\./d' /etc/hosts
+          sed -i '/git\./d' /etc/hosts
+          sed -i '/harbor\./d' /etc/hosts
+          sed -i '/registry\./d' /etc/hosts
+          sed -i '/argocd\./d' /etc/hosts
+        fi
+      changed_when: true
+      tags: [hosts, cleanup]
+
+    - name: "[Step 8] Clean orphaned APT dependencies"
+      ansible.builtin.shell: |
+        apt-get autoremove --purge -y 2>/dev/null || true
+      when: cleanup_packages | default(true) | bool
+      changed_when: true
+      tags: [packages, cleanup]
+
+    # --------------------------------------------------------------------------
+    # DATA PRESERVATION NOTICE
+    # --------------------------------------------------------------------------
+    - name: "[Summary] Display Cleanup and Data Status"
+      ansible.builtin.debug:
+        msg:
+          - "================================================================================"
+          - "                           DEVBOX CLEANUP COMPLETED                             "
+          - "================================================================================"
+          - "Tools & Binaries: Removed (kind, kubectl, helm, kubectx, kubens, gitea, bao, etc.)"
+          - "Systemd Services: Stopped, disabled, and units removed."
+          - "APT Packages:     Purged (nginx, dnsmasq, openbao, docker-ce, containerd)."
+          - "APT Repositories: Removed (openbao.sources, docker.list, keyrings)."
+          - "--------------------------------------------------------------------------------"
+          - "Persistent Data:  {{ 'PURGED (Explicit flag cleanup_data=true passed)' if (cleanup_data | default(false) | bool) else 'PRESERVED (/data/harbor, /var/lib/gitea, /var/lib/openbao, /root/.kube)' }}"
+          - "--------------------------------------------------------------------------------"
+          - "To also purge persistent data explicitly, run:"
+          - "  ansible-playbook -i inventory/hosts.ini playbooks/cleanup.yml -e 'cleanup_data=true'"
+          - "================================================================================"
+      tags: [always]
+
+    # --------------------------------------------------------------------------
+    # PROTECTED STEPS: Tailscale & SSH (Explicit Tag Only)
+    # --------------------------------------------------------------------------
+    - name: "[PROTECTED] Tear down Tailscale network"
+      ansible.builtin.shell: |
+        if which tailscale >/dev/null 2>&1; then
+          tailscale down || true
+        fi
+        systemctl stop tailscaled 2>/dev/null || true
+        systemctl disable tailscaled 2>/dev/null || true
+      changed_when: true
+      tags: [never, tailscale]
+
+    - name: "[PROTECTED] Revert SSH custom configuration"
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/00-devbox.conf
+        state: absent
+      notify: Restart SSH service
+      tags: [never, ssh]
+
+  handlers:
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart SSH service
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+      failed_when: false

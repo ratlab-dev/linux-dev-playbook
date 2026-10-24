@@ -1,0 +1,6 @@
+---
+# Handlers for role: gitea
+- name: Restart gitea
+  ansible.builtin.service:
+    name: gitea
+    state: restarted

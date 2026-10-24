@@ -1,0 +1,105 @@
+---
+# Tasks for installing Kubernetes tooling: kind, kubectl, and helm
+
+- name: Determine system architecture for binaries
+  ansible.builtin.set_fact:
+    k8s_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else 'arm64' }}"
+
+- name: Check if Kind is installed
+  ansible.builtin.command: "{{ kind_install_dir }}/kind version"
+  register: kind_check
+  changed_when: false
+  failed_when: false
+
+- name: Download and install Kind binary
+  ansible.builtin.get_url:
+    url: "https://kind.sigs.k8s.io/dl/{{ kind_version }}/kind-linux-{{ k8s_arch }}"
+    dest: "{{ kind_install_dir }}/kind"
+    owner: root
+    group: root
+    mode: '0755'
+    timeout: 120
+  when: kind_check.rc != 0 or kind_version not in kind_check.stdout
+
+- name: Check if kubectl is installed
+  ansible.builtin.command: "{{ kind_install_dir }}/kubectl version --client --output=json"
+  register: kubectl_check
+  changed_when: false
+  failed_when: false
+
+- name: Download and install kubectl binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/{{ k8s_arch }}/kubectl"
+    dest: "{{ kind_install_dir }}/kubectl"
+    owner: root
+    group: root
+    mode: '0755'
+    timeout: 120
+  when: kubectl_check.rc != 0 or kubectl_version not in kubectl_check.stdout
+
+- name: Check if Helm is installed
+  ansible.builtin.command: "{{ kind_install_dir }}/helm version --template '{% raw %}{{ .Version }}{% endraw %}'"
+  register: helm_check
+  changed_when: false
+  failed_when: false
+
+- name: Download and extract Helm binary
+  block:
+    - name: Download Helm archive
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-{{ helm_version }}-linux-{{ k8s_arch }}.tar.gz"
+        dest: "/tmp/helm-{{ helm_version }}.tar.gz"
+        mode: '0644'
+        timeout: 120
+
+    - name: Extract Helm to temporary directory
+      ansible.builtin.unarchive:
+        src: "/tmp/helm-{{ helm_version }}.tar.gz"
+        dest: "/tmp"
+        remote_src: true
+
+    - name: Install Helm binary to {{ kind_install_dir }}/helm
+      ansible.builtin.copy:
+        src: "/tmp/linux-{{ k8s_arch }}/helm"
+        dest: "{{ kind_install_dir }}/helm"
+        owner: root
+        group: root
+        mode: '0755'
+        remote_src: true
+
+    - name: Clean up Helm temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/helm-{{ helm_version }}.tar.gz"
+        - "/tmp/linux-{{ k8s_arch }}"
+  when: helm_check.rc != 0 or helm_version not in helm_check.stdout
+
+- name: Download and install kubectx
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/ahmetb/kubectx/master/kubectx"
+    dest: "{{ kind_install_dir }}/kubectx"
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Download and install kubens
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/ahmetb/kubectx/master/kubens"
+    dest: "{{ kind_install_dir }}/kubens"
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Ensure configuration and TLS directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ kind_config_dir }}"
+    - "{{ kind_tls_dir }}"
+    - /root/.kube

@@ -1,0 +1,231 @@
+---
+# Tasks for role: harbor (Docker-based container registry with TLS)
+
+- name: Ensure Harbor install and persistent directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ harbor_install_dir }}"
+    - "{{ harbor_data_volume }}"
+    - "{{ harbor_tls_dir }}"
+
+- name: Ensure Harbor host data subdirectories exist with container-compatible permissions
+  ansible.builtin.file:
+    path: "{{ harbor_data_volume }}/{{ item.dir }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { dir: "registry", owner: "10000", group: "10000", mode: "0755" }
+    - { dir: "database", owner: "999", group: "999", mode: "0700" }
+    - { dir: "job_logs", owner: "10000", group: "10000", mode: "0755" }
+    - { dir: "redis", owner: "999", group: "999", mode: "0755" }
+    - { dir: "secret", owner: "root", group: "root", mode: "0755" }
+
+- name: Provision wildcard TLS certificate for Harbor
+  block:
+    - name: Check if central wildcard certificate exists
+      ansible.builtin.stat:
+        path: /etc/ssl/certs/ratlab_wildcard.crt
+      register: central_wildcard_stat_harbor
+
+    - name: Issue wildcard TLS certificate via OpenBao Intermediate PKI if missing
+      ansible.builtin.command: >-
+        /usr/local/bin/issue-service-cert "*.{{ internal_domain | default('ratlab.dev') }}" {{ harbor_tls_dir }}/harbor.crt {{ harbor_tls_dir }}/harbor.key
+      when: not central_wildcard_stat_harbor.stat.exists
+      changed_when: true
+
+    - name: Deploy central wildcard certificate to Harbor TLS directory
+      ansible.builtin.copy:
+        src: /etc/ssl/certs/ratlab_wildcard.crt
+        dest: "{{ harbor_tls_dir }}/harbor.crt"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+      when: central_wildcard_stat_harbor.stat.exists
+
+    - name: Deploy central wildcard key to Harbor TLS directory
+      ansible.builtin.copy:
+        src: /etc/ssl/private/ratlab_wildcard.key
+        dest: "{{ harbor_tls_dir }}/harbor.key"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+      when: central_wildcard_stat_harbor.stat.exists
+
+- name: Secure Harbor TLS certificates
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - "{{ harbor_tls_dir }}/harbor.crt"
+    - "{{ harbor_tls_dir }}/harbor.key"
+
+- name: Check if Harbor installer is already downloaded
+  ansible.builtin.stat:
+    path: "{{ harbor_install_dir }}/install.sh"
+  register: harbor_install_script
+
+- name: Download and extract Harbor online installer
+  block:
+    - name: Download Harbor installer archive
+      ansible.builtin.get_url:
+        url: "https://github.com/goharbor/harbor/releases/download/{{ harbor_version }}/harbor-online-installer-{{ harbor_version }}.tgz"
+        dest: "/tmp/harbor-{{ harbor_version }}.tgz"
+        mode: '0644'
+
+    - name: Extract Harbor to {{ harbor_install_dir }}
+      ansible.builtin.unarchive:
+        src: "/tmp/harbor-{{ harbor_version }}.tgz"
+        dest: "{{ harbor_install_dir }}"
+        remote_src: true
+        extra_opts:
+          - --strip-components=1
+        owner: root
+        group: root
+  when: not harbor_install_script.stat.exists
+
+- name: Deploy harbor.yml configuration file
+  ansible.builtin.template:
+    src: harbor.yml.j2
+    dest: "{{ harbor_install_dir }}/harbor.yml"
+    owner: root
+    group: root
+    mode: '0600'
+  register: harbor_config
+
+- name: Run Harbor prepare script
+  ansible.builtin.command: ./prepare
+  args:
+    chdir: "{{ harbor_install_dir }}"
+  when: harbor_config.changed or not harbor_install_script.stat.exists
+  changed_when: true
+
+- name: Deploy Harbor systemd service unit
+  ansible.builtin.template:
+    src: harbor.service.j2
+    dest: /etc/systemd/system/harbor.service
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Start Harbor containers via systemd
+  ansible.builtin.systemd:
+    name: harbor
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Allow Harbor ports (HTTP 8080, HTTPS 443) in UFW if installed
+  block:
+    - name: Check if ufw is installed
+      ansible.builtin.command: which ufw
+      register: ufw_harbor_check
+      changed_when: false
+      failed_when: false
+
+    - name: Allow Harbor traffic in UFW
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "ufw allow {{ harbor_http_port }}/tcp"
+        - "ufw allow {{ harbor_https_port }}/tcp"
+      when: ufw_harbor_check.rc == 0
+      changed_when: false
+
+- name: Register Harbor and Registry DNS entries in ratlab dynamic DNS
+  ansible.builtin.copy:
+    dest: /etc/dnsmasq.hosts.d/harbor.hosts
+    content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ harbor_domain | default('harbor.' ~ internal_domain) }} registry.{{ internal_domain }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when: harbor_domain is defined or internal_domain is defined
+
+- name: Ensure Harbor and Registry are resolvable in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{ harbor_domain | default('harbor.' ~ internal_domain) }} registry.{{ internal_domain | default('ratlab.dev') }}"
+    state: present
+
+- name: Wait for harbor-db to be ready
+  ansible.builtin.command: docker exec harbor-db pg_isready -U postgres -d registry
+  register: harbor_db_ready
+  until: harbor_db_ready.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
+- name: Ensure Harbor admin password in database matches harbor_admin_password
+  ansible.builtin.shell: |
+    python3 -c "
+    import hashlib, subprocess, time
+    for _ in range(30):
+        try:
+            salt = subprocess.check_output(['docker', 'exec', 'harbor-db', 'psql', '-U', 'postgres', '-d', 'registry', '-t', '-A', '-c', 'SELECT salt FROM harbor_user WHERE user_id = 1;']).decode().strip()
+            if salt:
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+    else:
+        raise SystemExit('Timed out waiting for harbor_user table or admin user')
+    pwd_hash = hashlib.pbkdf2_hmac('sha256', '{{ harbor_admin_password }}'.encode('utf-8'), salt.encode('utf-8'), 4096, 16).hex()
+    subprocess.check_call(['docker', 'exec', 'harbor-db', 'psql', '-U', 'postgres', '-d', 'registry', '-c', f\"UPDATE harbor_user SET password = '{pwd_hash}' WHERE user_id = 1;\"])
+    "
+  changed_when: true
+
+- name: Wait for Harbor core API service to be healthy
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ harbor_https_port }}/api/v2.0/ping"
+    method: GET
+    validate_certs: false
+    status_code: 200
+  register: harbor_ping_ready
+  until: harbor_ping_ready.status == 200
+  retries: 30
+  delay: 3
+
+- name: Wait for Harbor Registry v2 endpoint to be available
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ harbor_https_port }}/v2/"
+    method: GET
+    validate_certs: false
+    status_code: 401
+  register: harbor_v2_ready
+  until: harbor_v2_ready.status == 401
+  retries: 30
+  delay: 2
+
+- name: Seed official Helm charts into Harbor OCI registry
+  block:
+    - name: Copy Helm chart upload scripts to devbox
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/{{ item }}"
+        dest: "/usr/local/bin/{{ item | regex_replace('\\.sh$', '') }}"
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - upload-metallb-chart-to-harbor.sh
+        - upload-argocd-chart-to-harbor.sh
+
+    - name: Ensure official MetalLB chart is published to Harbor
+      ansible.builtin.shell: |
+        /usr/local/bin/upload-metallb-chart-to-harbor {{ metallb_version | default('0.14.9') | regex_replace('^v', '') }}
+      register: metallb_harbor_push
+      changed_when: "'Successfully published' in metallb_harbor_push.stdout"
+
+    - name: Ensure official ArgoCD chart is published to Harbor
+      ansible.builtin.shell: |
+        /usr/local/bin/upload-argocd-chart-to-harbor {{ argocd_helm_chart_version | default('') }}
+      register: argocd_harbor_push
+      changed_when: "'Successfully published' in argocd_harbor_push.stdout"

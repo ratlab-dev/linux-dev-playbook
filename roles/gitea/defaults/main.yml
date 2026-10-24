@@ -1,0 +1,13 @@
+---
+# Defaults for role: gitea
+
+gitea_enable: true
+gitea_version: "1.22.6"
+gitea_domain: "git.ratlab.dev"
+gitea_http_port: 3000
+gitea_ssh_port: 2222
+gitea_user: "git"
+gitea_group: "git"
+gitea_home: "/var/lib/gitea"
+gitea_custom: "/etc/gitea"
+gitea_tls_dir: "/etc/gitea/tls"

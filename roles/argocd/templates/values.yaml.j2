@@ -1,0 +1,47 @@
+# Managed by Ansible (roles/argocd)
+# Helm Values for ArgoCD
+
+global:
+  domain: "{{ argocd_domain }}"
+
+configs:
+  params:
+    server.insecure: true
+
+  secret:
+    argocdServerAdminPassword: "{{ argocd_admin_bcrypt }}"
+    argocdServerAdminPasswordMtime: "2026-10-24T00:00:00Z"
+
+  tls:
+    certificates:
+{% if ratlab_root_ca_content is defined and ratlab_root_ca_content != '' %}
+      "{{ harbor_domain | default('registry.' ~ internal_domain) }}": |
+{{ ratlab_root_ca_content | indent(8, first=True) }}
+      "git.{{ internal_domain | default('ratlab.dev') }}": |
+{{ ratlab_root_ca_content | indent(8, first=True) }}
+{% endif %}
+
+  repositories:
+    gitops-repo:
+      url: "{{ argocd_gitea_url }}"
+      username: "admin"
+      password: "admin"
+      insecure: "true"
+    harbor-oci-repo:
+      type: helm
+      name: harbor-oci-repo
+      url: "{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ harbor_https_port | default(8443) }}/library"
+      enableOCI: "true"
+      insecure: "true"
+      username: "admin"
+      password: "{{ harbor_admin_password | default('admin') }}"
+
+server:
+  service:
+    type: {{ argocd_service_type | default('LoadBalancer') }}
+
+dex:
+  enabled: false # Lightweight setup using local admin
+
+notifications:
+  enabled: false

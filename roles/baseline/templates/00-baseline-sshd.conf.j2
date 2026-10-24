@@ -1,0 +1,15 @@
+# Managed by Ansible (baseline role)
+# Location: /etc/ssh/sshd_config.d/00-baseline.conf
+
+Port {{ baseline_ssh_port }}
+PermitRootLogin {{ baseline_ssh_permit_root_login }}
+PubkeyAuthentication {{ baseline_ssh_pubkey_authentication }}
+PasswordAuthentication {{ baseline_ssh_password_authentication }}
+AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2
+
+ClientAliveInterval 120
+ClientAliveCountMax 3
+TCPKeepAlive yes
+
+# Allow SFTP
+Subsystem sftp internal-sftp

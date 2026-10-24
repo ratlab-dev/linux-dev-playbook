@@ -1,0 +1,16 @@
+---
+# Handlers for role: openbao
+
+- name: Restart openbao
+  ansible.builtin.service:
+    name: openbao
+    state: restarted
+
+- name: Reload nginx
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true

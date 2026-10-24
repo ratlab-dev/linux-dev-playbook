@@ -1,0 +1,221 @@
+---
+# Tasks to provision a single Kind cluster and configure networking
+
+- name: Set facts for cluster {{ current_cluster.name }}
+  ansible.builtin.set_fact:
+    cluster_kubeconfig: "/root/.kube/{{ current_cluster.name }}.kubeconfig"
+    cluster_cert_path: "{{ kind_tls_dir }}/{{ current_cluster.name }}.crt"
+    cluster_key_path: "{{ kind_tls_dir }}/{{ current_cluster.name }}.key"
+
+- name: Issue TLS certificate for {{ current_cluster.name }} via OpenBao PKI
+  block:
+    - name: Check if cluster TLS certificate already exists
+      ansible.builtin.stat:
+        path: "{{ cluster_cert_path }}"
+      register: cluster_cert_stat
+
+    - name: Issue certificate from OpenBao Intermediate CA
+      ansible.builtin.command: >-
+        {{ openbao_install_dir }}/bao write -format=json {{ openbao_pki_mount }}/issue/{{ openbao_pki_role }}
+        common_name="{{ current_cluster.domain }}"
+        {% if current_cluster.alt_domain is defined and current_cluster.alt_domain.endswith('ratlab.dev') %}alt_names="{{ current_cluster.alt_domain }}"{% endif %}
+      environment:
+        VAULT_ADDR: "http://127.0.0.1:{{ openbao_port }}"
+        VAULT_TOKEN: "{{ openbao_init_data.root_token }}"
+      register: issued_cluster_cert_raw
+      when: not cluster_cert_stat.stat.exists
+
+    - name: Save cluster certificate
+      ansible.builtin.copy:
+        content: "{{ (issued_cluster_cert_raw.stdout | from_json).data.certificate }}\n{{ (issued_cluster_cert_raw.stdout | from_json).data.issuing_ca }}"
+        dest: "{{ cluster_cert_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: not cluster_cert_stat.stat.exists
+
+    - name: Save cluster private key
+      ansible.builtin.copy:
+        content: "{{ (issued_cluster_cert_raw.stdout | from_json).data.private_key }}"
+        dest: "{{ cluster_key_path }}"
+        owner: root
+        group: root
+        mode: '0600'
+      when: not cluster_cert_stat.stat.exists
+
+- name: Render Kind cluster configuration
+  ansible.builtin.template:
+    src: kind-config.yaml.j2
+    dest: "{{ kind_config_dir }}/{{ current_cluster.name }}.yaml"
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Check if Kind cluster {{ current_cluster.name }} exists
+  ansible.builtin.command: "{{ kind_install_dir }}/kind get clusters"
+  register: existing_clusters
+  changed_when: false
+
+- name: Create Kind cluster {{ current_cluster.name }}
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kind create cluster
+    --name {{ current_cluster.name }}
+    --config {{ kind_config_dir }}/{{ current_cluster.name }}.yaml
+    --kubeconfig {{ cluster_kubeconfig }}
+  when: current_cluster.name not in existing_clusters.stdout_lines
+  changed_when: true
+
+- name: Set default kubeconfig for management cluster
+  ansible.builtin.copy:
+    src: "{{ cluster_kubeconfig }}"
+    dest: /root/.kube/config
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+  when: current_cluster.is_management_cluster | default(false)
+
+- name: Wait for Kubernetes nodes to be Ready
+  ansible.builtin.command: >-
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }}
+    wait --for=condition=Ready nodes --all --timeout=120s
+  changed_when: false
+
+- name: Configure CoreDNS forwarding for internal domains
+  block:
+    - name: Fetch current Corefile from coredns ConfigMap
+      ansible.builtin.command: >-
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }}
+        get cm coredns -n kube-system -o jsonpath='{.data.Corefile}'
+      register: current_corefile
+      changed_when: false
+
+    - name: Deploy CoreDNS update script from template
+      ansible.builtin.template:
+        src: update-coredns.py.j2
+        dest: /tmp/update-coredns.py
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Execute CoreDNS forwarder update script
+      ansible.builtin.command: python3 /tmp/update-coredns.py
+      register: coredns_patch_result
+      changed_when: "'successfully patched' in coredns_patch_result.stdout"
+
+    - name: Remove temporary update script
+      ansible.builtin.file:
+        path: /tmp/update-coredns.py
+        state: absent
+
+- name: Enable strictARP in kube-proxy for future MetalLB support
+  ansible.builtin.shell: |
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} get configmap kube-proxy -n kube-system -o yaml | \
+    sed -e "s/strictARP: false/strictARP: true/" | \
+    {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f - -n kube-system
+  changed_when: false
+
+- name: Deploy Ratlab CA certificates and Cluster TLS secret into Kubernetes
+  block:
+    - name: Create CA certificates ConfigMap in kube-system and default
+      ansible.builtin.shell: |
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create configmap ratlab-ca \
+          --from-file=ratlab-root-ca.crt=/etc/ssl/certs/ratlab-root-ca.pem \
+          --from-file=intermediate.crt=/etc/openbao/tls/intermediate.crt \
+          -n {{ item }} --dry-run=client -o yaml | \
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+      loop:
+        - kube-system
+        - default
+      changed_when: false
+
+    - name: Create cluster TLS secret in kube-system and default
+      ansible.builtin.shell: |
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create secret tls cluster-tls-cert \
+          --cert={{ cluster_cert_path }} \
+          --key={{ cluster_key_path }} \
+          -n {{ item }} --dry-run=client -o yaml | \
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+      loop:
+        - kube-system
+        - default
+      changed_when: false
+
+- name: Configure OpenBao / Vault Kubernetes Trust for {{ current_cluster.name }}
+  ansible.builtin.import_tasks: vault_trust.yml
+
+- name: Expose {{ current_cluster.name }} Kubernetes API through Nginx reverse proxy
+  block:
+    - name: Ensure Nginx websocket connection upgrade map exists
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/websocket-map.conf
+        content: |
+          map $http_upgrade $connection_upgrade {
+              default upgrade;
+              ''      close;
+          }
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Deploy Nginx reverse proxy site for {{ current_cluster.name }}
+      ansible.builtin.template:
+        src: k8s-cluster.nginx.conf.j2
+        dest: "/etc/nginx/sites-available/k8s-{{ current_cluster.name }}.conf"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable Nginx site for {{ current_cluster.name }}
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/k8s-{{ current_cluster.name }}.conf"
+        dest: "/etc/nginx/sites-enabled/k8s-{{ current_cluster.name }}.conf"
+        state: link
+
+    - name: Register {{ current_cluster.name }} domain in dynamic dnsmasq hosts
+      ansible.builtin.copy:
+        dest: "/etc/dnsmasq.hosts.d/k8s-{{ current_cluster.name }}.hosts"
+        content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ current_cluster.domain }}{% if current_cluster.alt_domain is defined %} {{ current_cluster.alt_domain }}{% endif %}\n"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Ensure cluster domain is resolved locally in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "127.0.0.1 {{ current_cluster.domain }}{% if current_cluster.alt_domain is defined %} {{ current_cluster.alt_domain }}{% endif %}"
+        state: present
+
+    - name: Reload Nginx to activate cluster proxy
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+- name: Create cluster-admin ServiceAccount and generate long-lived token
+  block:
+    - name: Create cluster-admin-sa ServiceAccount
+      ansible.builtin.shell: |
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create sa cluster-admin-sa -n kube-system --dry-run=client -o yaml | \
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create clusterrolebinding cluster-admin-sa-binding \
+          --clusterrole=cluster-admin \
+          --serviceaccount=kube-system:cluster-admin-sa \
+          --dry-run=client -o yaml | \
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f -
+      changed_when: false
+
+    - name: Generate long-lived admin token for {{ current_cluster.name }}
+      ansible.builtin.command: >-
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }}
+        create token cluster-admin-sa -n kube-system --duration=87600h
+      register: generated_cluster_admin_token
+      changed_when: false
+
+    - name: Save admin token to /root/.kube/{{ current_cluster.name }}-admin.token
+      ansible.builtin.copy:
+        content: "{{ generated_cluster_admin_token.stdout | trim }}"
+        dest: "/root/.kube/{{ current_cluster.name }}-admin.token"
+        owner: root
+        group: root
+        mode: '0600'

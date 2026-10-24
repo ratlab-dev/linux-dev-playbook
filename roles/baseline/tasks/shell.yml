@@ -1,0 +1,67 @@
+---
+# Tasks for configuring enhanced shell, history, completions, and cluster utilities
+
+- name: Ensure fzf and bash-completion packages are installed
+  ansible.builtin.package:
+    name:
+      - fzf
+      - bash-completion
+    state: present
+
+- name: Download and install kubectx CLI
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/ahmetb/kubectx/master/kubectx"
+    dest: /usr/local/bin/kubectx
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Download and install kubens CLI
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/ahmetb/kubectx/master/kubens"
+    dest: /usr/local/bin/kubens
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Deploy system-wide profile configuration for bash/sh history and fzf
+  ansible.builtin.copy:
+    dest: /etc/profile.d/00-ratlab-shell.sh
+    content: |
+      # Enhanced shell history and completions managed by Ansible
+
+      # History settings (timestamped, deduplicated, synchronized)
+      export HISTSIZE=50000
+      export HISTFILESIZE=100000
+      export HISTCONTROL=ignoredups:erasedups
+      export HISTTIMEFORMAT="%F %T "
+      if [ -n "$BASH_VERSION" ]; then
+        shopt -s histappend 2>/dev/null || true
+        PROMPT_COMMAND="history -a; history -c; history -r; ${PROMPT_COMMAND:-}"
+      fi
+
+      # fzf fuzzy completions & keybindings
+      if command -v fzf >/dev/null 2>&1 && [ -n "$BASH_VERSION" ]; then
+        [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
+        [ -f /usr/share/doc/fzf/examples/completion.bash ] && source /usr/share/doc/fzf/examples/completion.bash
+        [ -f /etc/bash_completion.d/fzf ] && source /etc/bash_completion.d/fzf
+      fi
+
+      # Kubernetes completions and shortcuts
+      if command -v kubectl >/dev/null 2>&1 && [ -n "$BASH_VERSION" ]; then
+        source <(kubectl completion bash) 2>/dev/null || true
+        alias k=kubectl
+        complete -o default -F __start_kubectl k 2>/dev/null || true
+      fi
+
+      alias kctx=kubectx
+      alias kns=kubens
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Source profile.d in /etc/bash.bashrc if not already present
+  ansible.builtin.lineinfile:
+    path: /etc/bash.bashrc
+    line: "[ -f /etc/profile.d/00-ratlab-shell.sh ] && . /etc/profile.d/00-ratlab-shell.sh"
+    state: present

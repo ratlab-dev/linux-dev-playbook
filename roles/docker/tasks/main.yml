@@ -1,0 +1,94 @@
+---
+# Tasks for role: docker
+
+- name: Check if Docker is already installed
+  ansible.builtin.command: which docker
+  register: docker_check
+  changed_when: false
+  failed_when: false
+
+- name: Configure Docker official repository and install Docker CE
+  block:
+    - name: Ensure /etc/apt/keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Download Docker official GPG key
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ 'ubuntu' if (ansible_distribution | default('') | lower in ['ubuntu', 'pop', 'pop!_os', 'linuxmint', 'elementary']) else 'debian' }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Add Docker official repository to sources list
+      ansible.builtin.apt_repository:
+        repo: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else ansible_architecture }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ 'ubuntu' if (ansible_distribution | default('') | lower in ['ubuntu', 'pop', 'pop!_os', 'linuxmint', 'elementary']) else 'debian' }} {{ 'noble' if (ansible_distribution | default('') | lower in ['pop', 'pop!_os'] or ansible_distribution_release | default('') == 'noble') else (ansible_distribution_release | default('stable')) }} stable"
+        filename: docker
+        state: present
+
+    - name: Install Docker CE and related components
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+  when: docker_check.rc != 0
+
+- name: Ensure /etc/docker directory exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Deploy Docker daemon configuration
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart docker
+
+- name: Ensure docker service is enabled and started
+  ansible.builtin.service:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Add configured users to docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"
+  when: docker_users is defined and docker_users | length > 0
+
+- name: Verify Docker daemon responsiveness
+  ansible.builtin.command: docker info
+  register: docker_info
+  changed_when: false
+
+- name: Provide peer Mac Docker Context instructions
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "                         DOCKER SSH CONTEXT READY                               "
+      - "================================================================================"
+      - "To connect to this devbox Docker daemon from your Mac workstation, run:"
+      - ""
+      - "  docker context create {{ baseline_hostname.split('.')[0] }} --docker 'host=ssh://root@{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}'"
+      - "  docker context use {{ baseline_hostname.split('.')[0] }}"
+      - ""
+      - "Verify with: docker ps"
+      - "================================================================================"

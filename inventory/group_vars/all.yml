@@ -1,0 +1,197 @@
+---
+# Global domain settings
+internal_domain: "ratlab.dev"
+baseline_hostname: "{{ devbox_hostname | default('devbox.ratlab.dev') }}"
+
+# ==============================================================================
+# Baseline Settings (Local execution on laptop via bootstrap.sh)
+# ==============================================================================
+baseline_ssh_port: 22
+baseline_ssh_permit_root_login: "prohibit-password"  # Key-based root login
+baseline_ssh_password_authentication: "yes"
+
+# Public keys to authorize for root user (Mac / workstation keys)
+baseline_root_authorized_keys: []
+
+# Custom CA configuration (Certificates placed in files/certs/*.crt)
+baseline_custom_cas: []
+
+# Base system packages for troubleshooting & development
+baseline_system_packages:
+  - curl
+  - wget
+  - git
+  - tmux
+  - htop
+  - iotop
+  - iftop
+  - jq
+  - unzip
+  - tar
+  - vim
+  - nano
+  - rsync
+  - ca-certificates
+  - gnupg
+  - ufw
+  - iptables
+  - tcpdump
+  - iputils-ping
+  - traceroute
+  - net-tools
+  - python3
+  - python3-pip
+  - python3-apt
+
+# ==============================================================================
+# Tailscale Onboarding Settings
+# ==============================================================================
+tailscale_auth_key: ""          # Optional pre-approved auth key (tskey-auth-...)
+tailscale_ssh: true             # Enable Tailscale SSH feature (--ssh)
+tailscale_accept_routes: true
+tailscale_extra_args: ""
+
+# ==============================================================================
+# DNS Server (dnsmasq) Configuration
+# ==============================================================================
+dns_server_enable: true
+dns_upstream_servers:
+  - "1.1.1.1"
+  - "8.8.8.8"
+dns_custom_records:
+  - name: "vault.ratlab.dev"
+    ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+  - name: "git.ratlab.dev"
+    ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+  - name: "registry.ratlab.dev"
+    ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+  - name: "harbor.ratlab.dev"
+    ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+  - name: "*.ratlab.dev"
+    ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+
+# ==============================================================================
+# Docker Configuration
+# ==============================================================================
+docker_enable: true
+docker_users:
+  - "root"
+docker_log_max_size: "50m"
+docker_log_max_file: "3"
+
+# ==============================================================================
+# OpenBao (Vault) Configuration & PKI
+# ==============================================================================
+openbao_enable: true
+openbao_version: "2.1.0"
+openbao_port: 8200
+openbao_domain: "vault.ratlab.dev"
+openbao_data_dir: "/var/lib/openbao/data"
+openbao_config_dir: "/etc/openbao"
+openbao_tls_dir: "/etc/openbao/tls"
+
+# YubiKey Root CA Signing & Expiry Thresholds
+vault_tls_validity_days: 730              # 2 years validity
+vault_tls_expiry_threshold_seconds: 2592000 # 30 days (1 month threshold)
+intermediate_ca_validity_days: 3650       # 10 years validity
+
+# OpenBao Intermediate CA Configuration
+openbao_pki_mount: "pki_ratlab"
+openbao_pki_role: "ratlab-services"
+openbao_pki_max_ttl: "8760h"     # 1 year
+openbao_pki_default_ttl: "4380h" # 6 months
+# The intermediate CA is permitted to issue for *.ratlab.dev EXCEPT vault.ratlab.dev
+openbao_pki_allowed_domains:
+  - "ratlab.dev"
+  - "ratl"
+openbao_pki_excluded_domains:
+  - "vault.ratlab.dev"
+
+# ==============================================================================
+# Gitea Configuration
+# ==============================================================================
+gitea_enable: true
+gitea_version: "1.22.6"
+gitea_domain: "git.ratlab.dev"
+gitea_http_port: 3000
+gitea_ssh_port: 2222
+gitea_user: "git"
+gitea_home: "/var/lib/gitea"
+gitea_custom: "/etc/gitea"
+
+# ==============================================================================
+# Harbor Container Registry Configuration
+# ==============================================================================
+harbor_enable: true
+harbor_version: "v2.11.1"
+harbor_domain: "registry.ratlab.dev"
+harbor_data_volume: "/data/harbor"
+harbor_http_port: 8080
+harbor_https_port: 8443
+harbor_admin_password: "admin"
+
+# ==============================================================================
+# Kind Kubernetes Clusters Configuration & Vault Trust
+# ==============================================================================
+kind_enable: true
+kind_version: "v0.27.0"
+kubectl_version: "v1.31.4"
+helm_version: "v3.16.4"
+metallb_version: "v0.14.9"
+vault_apps_secrets_mount: "apps/secrets"
+
+kind_clusters:
+  - name: "tooling-cluster"
+    role: "tooling"
+    environment: "tooling"
+    domain: "tooling-cluster.k8s.ratlab.dev"
+    alt_domain: "tooling-cluster.k8s.ratl"
+    api_port: 6443
+    labels:
+      cluster-role: "tooling"
+      environment: "tooling"
+      cluster-name: "tooling-cluster"
+      tier: "platform"
+    metallb_ip_start_offset: 200
+    metallb_ip_end_offset: 210
+    is_management_cluster: true
+
+  - name: "app-cluster-1"
+    role: "workload"
+    environment: "production"
+    domain: "app-cluster-1.k8s.ratlab.dev"
+    alt_domain: "app-cluster-1.k8s.ratl"
+    api_port: 6444
+    labels:
+      application-workload: "true"
+      region: "in-south-1"
+      cluster-name: "app-cluster-1"
+      cluster-role: "workload"
+    metallb_ip_start_offset: 211
+    metallb_ip_end_offset: 220
+    is_management_cluster: false
+
+  - name: "app-cluster-2"
+    role: "workload"
+    environment: "production"
+    domain: "app-cluster-2.k8s.ratlab.dev"
+    alt_domain: "app-cluster-2.k8s.ratl"
+    api_port: 6445
+    labels:
+      application-workload: "true"
+      region: "in-north-1"
+      cluster-name: "app-cluster-2"
+      cluster-role: "workload"
+    metallb_ip_start_offset: 221
+    metallb_ip_end_offset: 230
+    is_management_cluster: false
+
+# ==============================================================================
+# ArgoCD GitOps Configuration
+# ==============================================================================
+argocd_enable: true
+argocd_domain: "argocd.ratlab.dev"
+argocd_admin_password: "admin"
+argocd_admin_bcrypt: "$2y$10$d86XJfjlicvsXCYixyw65OWVMs4c41j6yGr92lyMQUKA3a8DsVuQy"
+argocd_gitops_repo_name: "gitops"
+argocd_service_type: "LoadBalancer"

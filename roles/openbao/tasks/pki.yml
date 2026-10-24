@@ -1,0 +1,414 @@
+---
+# Tasks for OpenBao Intermediate PKI CA Engine Setup
+
+- name: Set BAO_ADDR environment fact
+  ansible.builtin.set_fact:
+    openbao_env:
+      VAULT_ADDR: "http://127.0.0.1:{{ openbao_port }}"
+      BAO_ADDR: "http://127.0.0.1:{{ openbao_port }}"
+
+- name: Check OpenBao initialization and seal status
+  ansible.builtin.command: "{{ openbao_install_dir }}/bao status -format=json"
+  environment: "{{ openbao_env }}"
+  register: openbao_status_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse OpenBao status
+  ansible.builtin.set_fact:
+    openbao_is_initialized: "{{ (openbao_status_raw.stdout | from_json).initialized if openbao_status_raw.stdout else false }}"
+    openbao_is_sealed: "{{ (openbao_status_raw.stdout | from_json).sealed if openbao_status_raw.stdout else true }}"
+
+- name: Initialize OpenBao if uninitialized
+  block:
+    - name: Run operator init
+      ansible.builtin.command: "{{ openbao_install_dir }}/bao operator init -key-shares=1 -key-threshold=1 -format=json"
+      environment: "{{ openbao_env }}"
+      register: openbao_init_output
+
+    - name: Save initialization keys locally on machine
+      ansible.builtin.copy:
+        content: "{{ openbao_init_output.stdout }}"
+        dest: "/root/.openbao_init.json"
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Fetch initialization credentials to controller
+      ansible.builtin.fetch:
+        src: "/root/.openbao_init.json"
+        dest: "{{ playbook_dir }}/../files/openbao_init.json"
+        flat: true
+
+    - name: Update facts with initialization credentials
+      ansible.builtin.set_fact:
+        openbao_init_data: "{{ openbao_init_output.stdout | from_json }}"
+        openbao_is_sealed: true
+  when: not openbao_is_initialized
+
+- name: Load initialization credentials if available
+  block:
+    - name: Check if /root/.openbao_init.json exists on target
+      ansible.builtin.stat:
+        path: /root/.openbao_init.json
+      register: target_openbao_init_stat
+
+    - name: Check if initialization credentials exist on controller
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../files/openbao_init.json"
+      register: controller_openbao_init_stat
+      delegate_to: localhost
+      become: false
+      when: not target_openbao_init_stat.stat.exists
+
+    - name: Restore /root/.openbao_init.json from controller to target
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/openbao_init.json"
+        dest: /root/.openbao_init.json
+        owner: root
+        group: root
+        mode: '0600'
+      when:
+        - not target_openbao_init_stat.stat.exists
+        - controller_openbao_init_stat.stat.exists
+
+    - name: Slurp /root/.openbao_init.json
+      ansible.builtin.slurp:
+        src: "/root/.openbao_init.json"
+      register: slurped_init
+      when: target_openbao_init_stat.stat.exists or (controller_openbao_init_stat.stat.exists | default(false))
+
+    - name: Parse stored init credentials
+      ansible.builtin.set_fact:
+        openbao_init_data: "{{ slurped_init.content | b64decode | from_json }}"
+      when: slurped_init is defined and slurped_init.content is defined
+
+    - name: Prompt for unseal key if OpenBao is sealed and credentials are missing
+      ansible.builtin.pause:
+        prompt: |
+
+          ================================================================================
+          OPENBAO IS SEALED (No stored credentials file found)
+          Enter unseal key to unseal the vault:
+          ================================================================================
+        echo: false
+      register: manual_unseal_key_prompt
+      when:
+        - openbao_is_sealed
+        - openbao_init_data is not defined
+
+    - name: Set manual unseal key fact
+      ansible.builtin.set_fact:
+        openbao_init_data:
+          unseal_keys_b64:
+            - "{{ manual_unseal_key_prompt.user_input | trim }}"
+      when:
+        - manual_unseal_key_prompt is defined
+        - manual_unseal_key_prompt.user_input is defined
+        - (manual_unseal_key_prompt.user_input | trim | length) > 0
+
+    - name: Prompt for root token if missing from facts
+      ansible.builtin.pause:
+        prompt: "Enter OpenBao root token to authenticate (or leave blank to skip PKI reconfig): "
+        echo: false
+      register: manual_root_token_prompt
+      when:
+        - openbao_init_data is defined
+        - openbao_init_data.root_token is not defined
+
+    - name: Set root token in facts
+      ansible.builtin.set_fact:
+        openbao_init_data: "{{ openbao_init_data | combine({'root_token': manual_root_token_prompt.user_input | trim}) }}"
+      when:
+        - manual_root_token_prompt is defined
+        - manual_root_token_prompt.user_input is defined
+        - (manual_root_token_prompt.user_input | trim | length) > 0
+  when:
+    - openbao_is_initialized
+    - openbao_init_data is not defined
+
+- name: Unseal OpenBao if sealed
+  ansible.builtin.command: "{{ openbao_install_dir }}/bao operator unseal {{ openbao_init_data.unseal_keys_b64[0] }}"
+  environment: "{{ openbao_env }}"
+  when:
+    - openbao_is_sealed
+    - openbao_init_data is defined
+  changed_when: true
+
+- name: Set OpenBao root token environment fact
+  ansible.builtin.set_fact:
+    openbao_authenticated_env: "{{ openbao_env | combine({'VAULT_TOKEN': openbao_init_data.root_token, 'BAO_TOKEN': openbao_init_data.root_token}) }}"
+  when: openbao_init_data is defined
+
+- name: Configure Intermediate PKI engine (when authenticated)
+  block:
+    - name: Check enabled secrets engines
+      ansible.builtin.command: "{{ openbao_install_dir }}/bao secrets list -format=json"
+      environment: "{{ openbao_authenticated_env }}"
+      register: secrets_list_raw
+      changed_when: false
+
+    - name: Enable PKI secrets engine at {{ openbao_pki_mount }}
+      ansible.builtin.command: "{{ openbao_install_dir }}/bao secrets enable -path={{ openbao_pki_mount }} pki"
+      environment: "{{ openbao_authenticated_env }}"
+      when: (openbao_pki_mount ~ '/') not in (secrets_list_raw.stdout | from_json)
+
+    - name: Tune PKI secrets engine max lease TTL
+      ansible.builtin.command: "{{ openbao_install_dir }}/bao secrets tune -max-lease-ttl={{ openbao_pki_max_ttl }} {{ openbao_pki_mount }}"
+      environment: "{{ openbao_authenticated_env }}"
+      changed_when: false
+
+    - name: Check if Intermediate CA already has a certificate configured
+      ansible.builtin.command: "{{ openbao_install_dir }}/bao read -format=json {{ openbao_pki_mount }}/cert/ca"
+      environment: "{{ openbao_authenticated_env }}"
+      register: ca_read_check
+      changed_when: false
+      failed_when: false
+
+    - name: Generate Intermediate CA CSR if no CA cert exists
+      block:
+        - name: Check if intermediate CSR already exists on target
+          ansible.builtin.stat:
+            path: "{{ openbao_tls_dir }}/intermediate.csr"
+          register: target_intermediate_csr
+
+        - name: Generate internal intermediate CSR if not present
+          ansible.builtin.command: >-
+            {{ openbao_install_dir }}/bao write -format=json {{ openbao_pki_mount }}/intermediate/generate/internal
+            common_name="Ratlab Dev Intermediate CA"
+            key_type="rsa"
+            key_bits=2048
+          environment: "{{ openbao_authenticated_env }}"
+          register: intermediate_csr_output
+          when: not target_intermediate_csr.stat.exists
+
+        - name: Save intermediate CSR on target
+          ansible.builtin.copy:
+            content: "{{ (intermediate_csr_output.stdout | from_json).data.csr }}"
+            dest: "{{ openbao_tls_dir }}/intermediate.csr"
+            owner: "{{ openbao_user }}"
+            group: "{{ openbao_group }}"
+            mode: '0644'
+          when: not target_intermediate_csr.stat.exists
+
+        - name: Fetch intermediate CSR to controller for YubiKey Root CA signing
+          ansible.builtin.fetch:
+            src: "{{ openbao_tls_dir }}/intermediate.csr"
+            dest: "{{ playbook_dir }}/../files/certs/intermediate.csr"
+            flat: true
+
+        - name: Check if existing intermediate certificate on controller exists
+          ansible.builtin.stat:
+            path: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+          register: local_intermediate_cert_stat
+          delegate_to: localhost
+          become: false
+
+        - name: Compare public keys between existing intermediate CRT and CSR
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            CRT_PUB=$(openssl x509 -in {{ playbook_dir }}/../files/certs/intermediate.crt -noout -pubkey 2>/dev/null | openssl md5 || true);
+            CSR_PUB=$(openssl req -in {{ playbook_dir }}/../files/certs/intermediate.csr -noout -pubkey 2>/dev/null | openssl md5 || true);
+            if [ -n "$CRT_PUB" ] && [ -n "$CSR_PUB" ] && [ "$CRT_PUB" = "$CSR_PUB" ]; then
+              exit 0;
+            else
+              exit 1;
+            fi
+          register: intermediate_pubkey_match
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          failed_when: false
+          when: local_intermediate_cert_stat.stat.exists
+
+        - name: Check if existing intermediate certificate on controller is valid for > 30 days
+          ansible.builtin.command: >-
+            openssl x509 -checkend 2592000 -noout -in {{ playbook_dir }}/../files/certs/intermediate.crt
+          register: intermediate_cert_checkend
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          failed_when: false
+          when:
+            - local_intermediate_cert_stat.stat.exists
+            - intermediate_pubkey_match.rc is defined and intermediate_pubkey_match.rc == 0
+
+        - name: Determine if Intermediate CA requires YubiKey signing
+          ansible.builtin.set_fact:
+            intermediate_needs_signing: >-
+              {{ (not local_intermediate_cert_stat.stat.exists) or
+                 (intermediate_pubkey_match.rc | default(1) != 0) or
+                 (intermediate_cert_checkend.rc | default(1) != 0) }}
+
+        - name: Sign Intermediate CA using YubiKey on Mac
+          block:
+            - name: Prompt user to connect YubiKey for Intermediate CA
+              ansible.builtin.pause:
+                prompt: |
+
+                  ================================================================================
+                  YUBIKEY ROOT CA SIGNING REQUIRED FOR INTERMEDIATE CA
+                  Validity: {{ intermediate_ca_validity_days | default(3650) }} days (~10 years).
+
+                  1. Ensure your YubiKey is connected to this Mac.
+                  2. Press [ENTER] to sign the Intermediate CA...
+                  ================================================================================
+
+            - name: Execute YubiKey signing script locally on Mac for Intermediate CA
+              ansible.builtin.command: >-
+                {{ playbook_dir }}/../scripts/sign_with_yubikey.sh
+                {{ playbook_dir }}/../files/certs/intermediate.csr
+                {{ playbook_dir }}/../files/certs/intermediate.crt
+                {{ intermediate_ca_validity_days | default(3650) }}
+                intermediate
+              delegate_to: localhost
+              become: false
+              register: yubikey_intermediate_result
+              changed_when: true
+          when: intermediate_needs_signing | bool
+      when: ca_read_check.rc != 0
+
+    - name: Check if signed Intermediate CA certificate exists on controller
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+      register: local_intermediate_cert
+      delegate_to: localhost
+      become: false
+
+    - name: Import signed Intermediate CA certificate into OpenBao
+      block:
+        - name: Check if Root CA certificate exists on controller
+          ansible.builtin.stat:
+            path: "{{ openbao_pki_root_ca_file }}"
+          register: local_root_ca_stat
+          delegate_to: localhost
+          become: false
+
+        - name: Copy intermediate certificate to target
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+            dest: "{{ openbao_tls_dir }}/intermediate.crt"
+            owner: "{{ openbao_user }}"
+            group: "{{ openbao_group }}"
+            mode: '0644'
+
+        - name: Assemble Intermediate CA certificate bundle with Root CA on target
+          ansible.builtin.copy:
+            content: |
+              {{ lookup('ansible.builtin.file', playbook_dir ~ '/../files/certs/intermediate.crt') | trim }}
+              {% if local_root_ca_stat.stat.exists %}
+              {{ lookup('ansible.builtin.file', openbao_pki_root_ca_file) | trim }}
+              {% endif %}
+            dest: "{{ openbao_tls_dir }}/intermediate_bundle.crt"
+            owner: "{{ openbao_user }}"
+            group: "{{ openbao_group }}"
+            mode: '0644'
+
+        - name: Submit signed certificate bundle to OpenBao intermediate PKI
+          ansible.builtin.command: "{{ openbao_install_dir }}/bao write {{ openbao_pki_mount }}/intermediate/set-signed certificate=@{{ openbao_tls_dir }}/intermediate_bundle.crt"
+          environment: "{{ openbao_authenticated_env }}"
+          changed_when: true
+      when:
+        - local_intermediate_cert.stat.exists
+        - ca_read_check.rc != 0
+
+    - name: Configure PKI role for Ratlab services (*.ratlab.dev)
+      ansible.builtin.command: >-
+        {{ openbao_install_dir }}/bao write {{ openbao_pki_mount }}/roles/{{ openbao_pki_role }}
+        allowed_domains="{{ openbao_pki_allowed_domains | join(',') }}"
+        allow_subdomains=true
+        allow_bare_domains=false
+        max_ttl="{{ openbao_pki_max_ttl }}"
+        ttl="{{ openbao_pki_default_ttl }}"
+        exclude_cn_from_sans=false
+      environment: "{{ openbao_authenticated_env }}"
+      changed_when: false
+
+    - name: Deploy OpenBao PKI access policy (excludes vault.ratlab.dev)
+      ansible.builtin.template:
+        src: pki-policy.hcl.j2
+        dest: "{{ openbao_config_dir }}/ratlab-services-policy.hcl"
+        owner: "{{ openbao_user }}"
+        group: "{{ openbao_group }}"
+        mode: '0640'
+
+    - name: Apply ratlab-services policy to OpenBao
+      ansible.builtin.command: "{{ openbao_install_dir }}/bao policy write ratlab-services {{ openbao_config_dir }}/ratlab-services-policy.hcl"
+      environment: "{{ openbao_authenticated_env }}"
+      changed_when: false
+
+    - name: Deploy service certificate issuance helper script (/usr/local/bin/issue-service-cert)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/issue-service-cert
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          DOMAIN="${1:-}"
+          CERT_OUT="${2:-}"
+          KEY_OUT="${3:-}"
+
+          if [[ -z "${DOMAIN}" || -z "${CERT_OUT}" || -z "${KEY_OUT}" ]]; then
+              echo "Usage: issue-service-cert <domain> <cert_out_path> <key_out_path>" 1>&2
+              exit 1
+          fi
+
+          if [[ "${DOMAIN}" == "{{ openbao_domain }}" ]]; then
+              echo "[SECURITY ERROR] The Intermediate CA is explicitly forbidden from issuing certificates for {{ openbao_domain }}!" 1>&2
+              exit 1
+          fi
+
+          export VAULT_ADDR="http://127.0.0.1:{{ openbao_port }}"
+          export BAO_ADDR="http://127.0.0.1:{{ openbao_port }}"
+          export VAULT_TOKEN="{{ openbao_init_data.root_token }}"
+          export BAO_TOKEN="{{ openbao_init_data.root_token }}"
+
+          RESP=$(bao write -format=json {{ openbao_pki_mount }}/issue/{{ openbao_pki_role }} common_name="${DOMAIN}")
+
+          mkdir -p "$(dirname "${CERT_OUT}")" "$(dirname "${KEY_OUT}")"
+          echo "${RESP}" | jq -r .data.certificate > "${CERT_OUT}"
+          if echo "${RESP}" | jq -e '.data.ca_chain and (.data.ca_chain | length > 0)' >/dev/null 2>&1; then
+              echo "${RESP}" | jq -r '.data.ca_chain[]' >> "${CERT_OUT}"
+          else
+              echo "${RESP}" | jq -r .data.issuing_ca >> "${CERT_OUT}"
+          fi
+          echo "${RESP}" | jq -r .data.private_key > "${KEY_OUT}"
+          chmod 644 "${CERT_OUT}"
+          chmod 600 "${KEY_OUT}"
+
+          echo "Successfully issued TLS certificate for ${DOMAIN} signed by Intermediate CA!"
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Ensure central SSL certificate directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - /etc/ssl/certs
+        - /etc/ssl/private
+
+    - name: Issue central wildcard TLS certificate for *.{{ internal_domain }}
+      ansible.builtin.command: >-
+        /usr/local/bin/issue-service-cert "*.{{ internal_domain }}" /etc/ssl/certs/ratlab_wildcard.crt /etc/ssl/private/ratlab_wildcard.key
+      args:
+        creates: /etc/ssl/certs/ratlab_wildcard.crt
+
+    - name: Set permissions on central wildcard certificate
+      ansible.builtin.file:
+        path: /etc/ssl/certs/ratlab_wildcard.crt
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Set permissions on central wildcard private key
+      ansible.builtin.file:
+        path: /etc/ssl/private/ratlab_wildcard.key
+        owner: root
+        group: root
+        mode: '0640'
+  when: openbao_init_data is defined

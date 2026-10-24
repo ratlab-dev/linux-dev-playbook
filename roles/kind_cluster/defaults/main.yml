@@ -1,0 +1,65 @@
+---
+# Defaults for role: kind_cluster
+kind_enable: true
+kind_version: "v0.27.0"
+kubectl_version: "v1.31.4"
+helm_version: "v3.16.4"
+metallb_version: "v0.14.9"
+
+kind_install_dir: "/usr/local/bin"
+kind_config_dir: "/etc/kubernetes/kind"
+kind_tls_dir: "/etc/kubernetes/tls"
+openbao_install_dir: "/usr/bin"
+openbao_port: 8200
+openbao_pki_mount: "pki_ratlab"
+openbao_pki_role: "ratlab-services"
+
+# List of kind clusters to provision and manage
+kind_clusters:
+  - name: "tooling-cluster"
+    role: "tooling"
+    environment: "tooling"
+    domain: "tooling-cluster.k8s.ratlab.dev"
+    alt_domain: "tooling-cluster.k8s.ratl"
+    api_port: 6443
+    labels:
+      cluster-role: "tooling"
+      environment: "tooling"
+      cluster-name: "tooling-cluster"
+      tier: "platform"
+    metallb_ip_start_offset: 200
+    metallb_ip_end_offset: 210
+    is_management_cluster: true
+
+  - name: "app-cluster-1"
+    role: "workload"
+    environment: "production"
+    domain: "app-cluster-1.k8s.ratlab.dev"
+    alt_domain: "app-cluster-1.k8s.ratl"
+    api_port: 6444
+    labels:
+      application-workload: "true"
+      region: "in-south-1"
+      cluster-name: "app-cluster-1"
+      cluster-role: "workload"
+    metallb_ip_start_offset: 211
+    metallb_ip_end_offset: 220
+    is_management_cluster: false
+
+  - name: "app-cluster-2"
+    role: "workload"
+    environment: "production"
+    domain: "app-cluster-2.k8s.ratlab.dev"
+    alt_domain: "app-cluster-2.k8s.ratl"
+    api_port: 6445
+    labels:
+      application-workload: "true"
+      region: "in-north-1"
+      cluster-name: "app-cluster-2"
+      cluster-role: "workload"
+    metallb_ip_start_offset: 221
+    metallb_ip_end_offset: 230
+    is_management_cluster: false
+
+# OpenBao Vault integration settings
+vault_apps_secrets_mount: "apps/secrets"

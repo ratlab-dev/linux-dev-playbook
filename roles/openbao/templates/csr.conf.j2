@@ -1,0 +1,27 @@
+[req]
+default_bits       = 2048
+prompt             = no
+default_md         = sha256
+req_extensions     = req_ext
+distinguished_name = dn
+
+[dn]
+C  = US
+ST = State
+L  = Local
+O  = Ratlab
+OU = Devbox
+CN = {{ openbao_domain }}
+
+[req_ext]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = {{ openbao_domain }}
+DNS.2 = localhost
+DNS.3 = {{ baseline_hostname.split('.')[0] }}
+DNS.4 = {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ internal_domain) }}
+IP.1  = 127.0.0.1
+{% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
+IP.2  = {{ tailscale_node_ip }}
+{% endif %}

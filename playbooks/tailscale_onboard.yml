@@ -1,0 +1,6 @@
+---
+- name: Onboard Machine to Tailscale Network
+  hosts: all
+  become: true
+  roles:
+    - tailscale

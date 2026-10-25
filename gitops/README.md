@@ -1,18 +1,27 @@
 # Ratlab GitOps Repository
 
-This directory contains GitOps definitions for ArgoCD Application and ApplicationSets.
-It is maintained in the local playbook workspace without git tracking, and synchronized into Gitea (`git.ratlab.dev:3000/admin/gitops.git`) by Ansible.
+This directory contains GitOps manifests for ArgoCD.
+Ansible pushes these files to Gitea at git.ratlab.dev.
+
+## Cluster Architecture
+
+The environment runs a single giant Kind cluster.
+The cluster is named giant-cluster.
+It has one control plane node and two worker nodes.
+It runs both platform tools and application workloads.
 
 ## Directory Structure
-- `applicationsets/`
-  - `cluster-namespaces.yaml`: ApplicationSet targeting all clusters deploying non-admin namespaces (Sync wave 0)
-  - `tooling-apps.yaml`: ApplicationSet targeting clusters labeled `cluster-role: tooling`
-  - `workload-apps.yaml`: ApplicationSet targeting clusters labeled `cluster-role: workload`
-  - `metallb-engine.yaml`: ArgoCD Application deploying official MetalLB Helm chart from Harbor OCI (Sync wave 1)
-  - `metallb-config.yaml`: Vanilla ArgoCD Application deploying IPAddressPool and L2Advertisement (Sync wave 5)
-- `apps/`
-  - `namespaces/`: Declarative non-admin namespace manifests (`metallb-system`, `argocd`, `guestbook`, `vault-secret-demo`)
-  - `metallb/`: Base values for the MetalLB Helm chart (Layer 1)
-  - `metallb-config/`: Vanilla manifests (`IPAddressPool`, `L2Advertisement`) (Layer 2)
-  - `vault-secret-demo/`: Deployment demonstrating ServiceAccount vault trust (`<ns>/<sa>` -> `/apps/secrets/<ns>_<sa>`)
-  - `guestbook/`: Standard guestbook application for workload clusters
+
+### applicationsets/
+- cluster-namespaces.yaml: Creates non-admin namespaces on the cluster.
+- tooling-apps.yaml: Deploys platform tools like vault-secret-demo.
+- workload-apps.yaml: Deploys user workloads like guestbook.
+- metallb-engine.yaml: Deploys the MetalLB operator from Harbor.
+- metallb-config.yaml: Configures the MetalLB address pool.
+
+### apps/
+- namespaces/: Manifests for namespaces.
+- metallb/: Helm values for MetalLB.
+- metallb-config/: IPAddressPool and L2Advertisement manifests.
+- vault-secret-demo/: Demo application for Vault secrets.
+- guestbook/: Sample guestbook application.

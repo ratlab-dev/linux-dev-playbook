@@ -47,7 +47,7 @@
     # --------------------------------------------------------------------------
     - name: "[Step 1] Delete Kind Kubernetes clusters"
       ansible.builtin.shell: |
-        for cluster in app-cluster-2 app-cluster-1 tooling-cluster; do
+        for cluster in giant-cluster giant app-cluster-2 app-cluster-1 tooling-cluster; do
           if which kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -q "^${cluster}\$"; then
             kind delete cluster --name "${cluster}" || true
           fi
@@ -83,6 +83,8 @@
         path: "{{ item }}"
         state: absent
       loop:
+        - /etc/nginx/sites-enabled/k8s-giant-cluster.conf
+        - /etc/nginx/sites-available/k8s-giant-cluster.conf
         - /etc/nginx/sites-enabled/k8s-app-cluster-1.conf
         - /etc/nginx/sites-available/k8s-app-cluster-1.conf
         - /etc/nginx/sites-enabled/k8s-app-cluster-2.conf

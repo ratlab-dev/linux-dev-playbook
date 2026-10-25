@@ -18,12 +18,12 @@
     fi
   changed_when: true
 
-- name: Wait for cluster-namespaces ApplicationSet to generate tooling-cluster-namespaces
+- name: Wait for cluster-namespaces ApplicationSet to generate {{ mgmt_cluster.name }}-namespaces
   ansible.builtin.shell: |
     for i in $(seq 1 30); do
-      if {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} get application tooling-cluster-namespaces >/dev/null 2>&1; then
+      if {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} get application {{ mgmt_cluster.name }}-namespaces >/dev/null 2>&1; then
         {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
-          patch application tooling-cluster-namespaces --type merge -p '{"operation":{"sync":{"prune":true}}}' 2>/dev/null || true
+          patch application {{ mgmt_cluster.name }}-namespaces --type merge -p '{"operation":{"sync":{"prune":true}}}' 2>/dev/null || true
         break
       fi
       sleep 2

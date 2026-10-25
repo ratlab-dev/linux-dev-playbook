@@ -158,7 +158,7 @@ cleanup_argocd_kind() {
     log_step "Step 1: Reverting ArgoCD, Kind Clusters & K8s Binaries"
 
     # Delete Kind clusters in reverse order
-    for cluster in app-cluster-2 app-cluster-1 tooling-cluster; do
+    for cluster in giant-cluster giant app-cluster-2 app-cluster-1 tooling-cluster; do
         if command -v kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -q "^${cluster}\$"; then
             echo "Deleting Kind cluster: ${cluster}..."
             kind delete cluster --name "${cluster}" || true

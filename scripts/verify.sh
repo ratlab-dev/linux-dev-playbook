@@ -43,7 +43,7 @@ fi
 
 # 3. DNS Resolution on target dnsmasq
 echo -e "${BLUE}[3/5] Testing DNS Resolution on devbox (Port 53)...${NC}"
-DOMAINS=("devbox.ratlab.dev" "vault.ratlab.dev" "git.ratlab.dev" "harbor.ratlab.dev" "wildcard-test.ratlab.dev")
+DOMAINS=("devbox.ratlab.dev" "vault.ratlab.dev" "git.ratlab.dev" "jenkins.ratlab.dev" "harbor.ratlab.dev" "wildcard-test.ratlab.dev")
 for d in "${DOMAINS[@]}"; do
     IP=$(dig "@${TARGET}" "${d}" +short 2>/dev/null | tail -n 1 || true)
     if [[ -n "${IP}" ]]; then
@@ -64,7 +64,7 @@ fi
 
 # 5. Service Status Check
 echo -e "${BLUE}[5/5] Checking Services on devbox...${NC}"
-SERVICES=("tailscaled" "dnsmasq" "docker" "openbao" "gitea" "harbor")
+SERVICES=("tailscaled" "dnsmasq" "docker" "openbao" "gitea" "jenkins" "harbor")
 for s in "${SERVICES[@]}"; do
     STATUS=$(ssh -o BatchMode=yes "root@${TARGET}" "systemctl is-active ${s} 2>/dev/null || true" | tr -d '\r\n')
     if [[ -z "${STATUS}" ]]; then

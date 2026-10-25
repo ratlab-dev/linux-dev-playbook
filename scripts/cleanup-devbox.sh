@@ -103,6 +103,9 @@ if [[ "$OSTYPE" == "darwin"* ]] || [[ "$REMOTE_MODE" == true ]]; then
         harbor)
             TAG_ARGS+=("--tags" "harbor")
             ;;
+        jenkins)
+            TAG_ARGS+=("--tags" "jenkins")
+            ;;
         gitea)
             TAG_ARGS+=("--tags" "gitea")
             ;;
@@ -229,6 +232,38 @@ cleanup_harbor() {
     fi
 
     echo -e "${GREEN}[OK] Step 2 complete: Harbor service and installation removed.${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# STEP 2.5: Revert Jenkins CI Server
+# ------------------------------------------------------------------------------
+cleanup_jenkins() {
+    log_step "Step 2.5: Reverting Jenkins CI Server & Kubernetes Agents"
+
+    if systemctl is-enabled --quiet jenkins 2>/dev/null || systemctl is-active --quiet jenkins 2>/dev/null; then
+        echo "Stopping and disabling jenkins.service..."
+        systemctl stop jenkins 2>/dev/null || true
+        systemctl disable jenkins 2>/dev/null || true
+    fi
+
+    echo "Removing Jenkins systemd unit, Nginx proxy, and binaries..."
+    rm -f /etc/systemd/system/jenkins.service
+    rm -f /etc/nginx/sites-enabled/jenkins.conf
+    rm -f /etc/nginx/sites-available/jenkins.conf
+    rm -f /etc/dnsmasq.hosts.d/jenkins.hosts
+    rm -f /usr/share/java/jenkins.war
+    rm -f /usr/local/bin/jenkins-plugin-manager.jar
+    rm -f /usr/local/bin/test-jenkins-k8s-build
+    systemctl daemon-reload
+
+    if [[ "$INCLUDE_DATA" == true ]]; then
+        echo -e "${RED}[DATA] Purging Jenkins home and data (/var/lib/jenkins)...${NC}"
+        rm -rf /var/lib/jenkins /var/log/jenkins /etc/jenkins /var/www/jenkins_oidc
+    else
+        echo -e "${YELLOW}[DATA PRESERVED] Jenkins data (/var/lib/jenkins) was kept intact.${NC}"
+    fi
+
+    echo -e "${GREEN}[OK] Step 2.5 complete: Jenkins service and configuration removed.${NC}"
 }
 
 # ------------------------------------------------------------------------------
@@ -464,6 +499,9 @@ case "${TARGET_STEP}" in
     harbor)
         cleanup_harbor
         ;;
+    jenkins)
+        cleanup_jenkins
+        ;;
     gitea)
         cleanup_gitea
         ;;
@@ -494,6 +532,7 @@ case "${TARGET_STEP}" in
         echo -e "${YELLOW}>> Commencing FULL devbox tooling & service cleanup in REVERSE order...${NC}"
         cleanup_argocd_kind    # Step 1: Kind clusters, ArgoCD & K8s binaries
         cleanup_harbor         # Step 2: Harbor service, stack & scripts
+        cleanup_jenkins        # Step 2.5: Jenkins CI, K8s agents & OIDC
         cleanup_gitea          # Step 3: Gitea service & binary
         cleanup_openbao        # Step 4: OpenBao service, package, binary & PKI
         cleanup_nginx          # Step 5: Nginx reverse proxy service & package

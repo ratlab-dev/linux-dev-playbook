@@ -1,0 +1,77 @@
+# Jenkins Configuration as Code (JCasC)
+# Managed by Ansible (roles/jenkins)
+
+jenkins:
+  systemMessage: "Ratlab Devbox Automated Jenkins Controller (Workload Identity & K8s Agents)"
+  numExecutors: 0  # Controller executors disabled: all builds run on Kubernetes ephemeral workers
+  mode: EXCLUSIVE
+  scmCheckoutRetryCount: 3
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "{{ jenkins_admin_user | default('admin') }}"
+          password: "{{ jenkins_admin_password | default('admin') }}"
+
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: true  # Required for OpenID Connect discovery endpoints
+
+  clouds:
+    - kubernetes:
+        name: "{{ jenkins_k8s_cloud_name | default('giant-cluster') }}"
+        serverUrl: "https://{{ (kind_clusters | default([{}]))[0].domain | default('giant-cluster.k8s.ratlab.dev') }}"
+        jenkinsUrl: "https://{{ jenkins_domain | default('jenkins.ratlab.dev') }}"
+        namespace: "{{ jenkins_agent_namespace | default('jenkins-agents') }}"
+        webSocket: true
+        directConnection: false
+        skipTlsVerify: true
+        templates:
+          - name: "default"
+            label: "jenkins-agent k8s-agent ephemeral-agent"
+            nodeUsageMode: "NORMAL"
+            workspaceVolume:
+              emptyDirWorkspaceVolume:
+                memory: false
+            serviceAccount: "{{ jenkins_agent_service_account | default('jenkins-agent') }}"
+            containers:
+              - name: "jnlp"
+                image: "jenkins/inbound-agent:latest"
+                alwaysPullImage: false
+                workingDir: "/home/jenkins/agent"
+                resourceRequestCpu: "200m"
+                resourceLimitCpu: "1000m"
+                resourceRequestMemory: "256Mi"
+                resourceLimitMemory: "1024Mi"
+              - name: "builder"
+                image: "alpine/git:latest"
+                command: "cat"
+                ttyEnabled: true
+                alwaysPullImage: false
+                workingDir: "/home/jenkins/agent"
+
+unclassified:
+  location:
+    url: "https://{{ jenkins_domain | default('jenkins.ratlab.dev') }}/"
+    adminAddress: "admin@{{ internal_domain | default('ratlab.dev') }}"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - idTokenFile:
+              id: "harbor-oidc-token"
+              scope: "GLOBAL"
+              audience: "harbor"
+              description: "Ephemeral OIDC ID token for Harbor authentication"
+          - idTokenFile:
+              id: "gitea-oidc-token"
+              scope: "GLOBAL"
+              audience: "gitea"
+              description: "Ephemeral OIDC ID token for Gitea authentication"
+          - idTokenFile:
+              id: "ratlab-workload-token"
+              scope: "GLOBAL"
+              audience: "ratlab-services"
+              description: "Generic OIDC ID token for Ratlab workload identity"

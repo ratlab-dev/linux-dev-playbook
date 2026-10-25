@@ -64,6 +64,19 @@
     wait --for=jsonpath='{.status.health.status}'=Healthy application/metallb-config --timeout=120s
   changed_when: false
 
+- name: Trigger initial sync for Jenkins agents RBAC application in ArgoCD
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      if {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} get application {{ mgmt_cluster.name }}-jenkins-agents-rbac >/dev/null 2>&1; then
+        {{ kind_install_dir }}/kubectl --kubeconfig {{ argocd_kubeconfig }} -n {{ argocd_namespace }} \
+          patch application {{ mgmt_cluster.name }}-jenkins-agents-rbac --type merge -p '{"operation":{"sync":{"prune":true}}}' 2>/dev/null || true
+        break
+      fi
+      sleep 2
+    done
+  changed_when: false
+  when: jenkins_enable | default(true) | bool
+
 - name: Retrieve ArgoCD server LoadBalancer IP (End-to-End MetalLB Verification)
   ansible.builtin.shell: |
     for i in $(seq 1 40); do

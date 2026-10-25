@@ -7,6 +7,7 @@
     - "{{ openbao_domain }}"
     - "{{ gitea_domain }}"
     - "{{ harbor_domain }}"
+    - "{{ jenkins_domain | default('jenkins.ratlab.dev') }}"
   register: dns_test_results
   changed_when: false
   failed_when: false
@@ -52,6 +53,41 @@
     timeout: 5
   register: harbor_health_result
   failed_when: false
+
+- name: Test Jenkins CI HTTPS endpoint via Nginx
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443/login"
+    headers:
+      Host: "{{ jenkins_domain | default('jenkins.ratlab.dev') }}"
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: jenkins_health_result
+  failed_when: false
+  when: jenkins_enable | default(true) | bool
+
+- name: Test Jenkins OIDC Discovery Endpoint
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443/.well-known/openid-configuration"
+    headers:
+      Host: "{{ jenkins_domain | default('jenkins.ratlab.dev') }}"
+    method: GET
+    validate_certs: false
+    status_code: 200
+    timeout: 5
+  register: jenkins_oidc_result
+  failed_when: false
+  when: jenkins_enable | default(true) | bool
+
+- name: Test Jenkins ephemeral worker namespace in Kubernetes
+  ansible.builtin.command: >-
+    /usr/local/bin/kubectl --kubeconfig /root/.kube/config --context={{ (kind_clusters | default([{}]))[0].name | default('giant-cluster') }}
+    get sa {{ jenkins_agent_service_account | default('jenkins-agent') }} -n {{ jenkins_agent_namespace | default('jenkins-agents') }}
+  register: jenkins_k8s_sa_check
+  changed_when: false
+  failed_when: false
+  when: (jenkins_enable | default(true) | bool) and (kind_enable | default(true) | bool)
 
 - name: Gather Tailscale connection status
   ansible.builtin.command: tailscale status --json
@@ -158,13 +194,16 @@
       - "Docker Engine:      {{ 'PASS' if docker_test_result.rc == 0 else 'FAIL' }}"
       - "OpenBao (Vault):    {{ 'ONLINE (HTTP ' ~ openbao_health_result.status ~ ')' if openbao_health_result.status is defined else 'OFFLINE' }}"
       - "Gitea (Git):        {{ 'ONLINE' if gitea_health_result.status == 200 else 'STARTING / OFFLINE' }}"
+      - "Jenkins (CI & OIDC): {{ 'ONLINE (OIDC active)' if (jenkins_health_result.status | default(0)) == 200 else 'STARTING / OFFLINE' }}"
       - "Harbor (Registry):  {{ 'ONLINE' if harbor_health_result.status == 200 else 'STARTING / OFFLINE' }}"
       - "Kind Clusters:      {{ 'ONLINE (' ~ (kind_clusters | default([]) | length) ~ ' clusters ready)' if (k8s_clusters_status.results | default([]) | map(attribute='rc') | select('ne', 0) | list | length == 0) else 'DEGRADED / CHECK' }}"
+      - "Jenkins K8s Agent:  {{ 'READY (ServiceAccount found)' if (jenkins_k8s_sa_check.rc | default(1)) == 0 else 'NOT CONFIGURED' }}"
       - "Nginx K8s Proxies:  {{ 'PASS (Vault TLS active)' if (k8s_proxies_status.results | default([]) | map(attribute='status') | select('ne', 200) | list | length == 0) else 'CHECK CONFIG' }}"
       - "ArgoCD GitOps:      {{ 'ONLINE (HTTP ' ~ argocd_health_result.status ~ ')' if argocd_health_result.status is defined else 'OFFLINE' }}"
       - "--------------------------------------------------------------------------------"
       - "Service Authentication (admin / admin):"
       - "  Gitea (API):       {{ 'PASS (200 OK)' if (gitea_auth_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (gitea_auth_result.status | default('N/A')) ~ ')' }}"
+      - "  Jenkins (UI):      {{ 'PASS (200 OK)' if (jenkins_health_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (jenkins_health_result.status | default('N/A')) ~ ')' }}"
       - "  Harbor (Registry): {{ 'PASS (200 OK)' if (harbor_auth_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (harbor_auth_result.status | default('N/A')) ~ ')' }}"
       - "  ArgoCD (Session):  {{ 'PASS (200 OK)' if (argocd_auth_result.status | default(0)) == 200 else 'FAIL (HTTP ' ~ (argocd_auth_result.status | default('N/A')) ~ ')' }}"
       - "--------------------------------------------------------------------------------"
@@ -176,6 +215,7 @@
       - "  Contexts:         {{ kind_clusters | map(attribute='name') | join(', ') }}"
       - "  OpenBao UI:       https://{{ openbao_domain }} (Credentials: files/vault_credentials.json / files/openbao_init.json)"
       - "  Gitea Web:        https://{{ gitea_domain }}:{{ gitea_http_port }}"
+      - "  Jenkins Web:      https://{{ jenkins_domain | default('jenkins.ratlab.dev') }} (admin / admin)"
       - "  Harbor Registry:  https://{{ harbor_domain }}"
       - "  ArgoCD UI:        https://{{ argocd_domain | default('argocd.ratlab.dev') }} (admin / admin)"
       - "  Docker Context:   docker context create {{ baseline_hostname.split('.')[0] }} --docker 'host=ssh://root@{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}'"

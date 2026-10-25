@@ -23,11 +23,22 @@ Setup runs in two distinct stages.
 - Core Services:
   - vault.ratlab.dev: OpenBao PKI and Web UI
   - git.ratlab.dev: Gitea Git service
+  - jenkins.ratlab.dev: Jenkins CI and OIDC Provider
   - registry.ratlab.dev: Harbor container registry
   - argocd.ratlab.dev: ArgoCD GitOps Web UI
   - giant-cluster.k8s.ratlab.dev: Kubernetes API proxy
 - Network Fabric: Tailscale mesh network.
 - DNS Resolution: dnsmasq resolves *.ratlab.dev to the devbox Tailscale IP.
+- Port Allocation Policy: Centralized registry in `inventory/group_vars/all.yml` (`ratlab_ports`). Exactly one unique port is mapped per system service:
+  - SSH: 22
+  - DNS (dnsmasq): 53
+  - Nginx (HTTP/HTTPS): 80 / 443
+  - Gitea (SSH/HTTP): 2222 / 3000
+  - Kind giant-cluster API: 6443
+  - Harbor (HTTP/HTTPS): 8080 / 8443
+  - Jenkins Controller (HTTP/JNLP): 8088 / 50000
+  - OpenBao Vault: 8200
+  - Enforced by pre-run assertion in `playbooks/devbox.yml`.
 
 ## 3. Stage 1: Laptop Bootstrap Details
 
@@ -85,17 +96,29 @@ Setup runs in two distinct stages.
 - Stores data in /var/lib/gitea.
 - Secured with TLS via OpenBao Intermediate CA.
 - Web UI on port 3000, SSH on port 2222.
+- Configured with OAuth2/OIDC provider trusting Jenkins workloads so code can be pulled keylessly.
 
-### 4.7. Harbor Container Registry (roles/harbor)
+### 4.7. Jenkins CI Controller & Workload Identity (roles/jenkins)
+- Runs as a systemd service under user jenkins.
+- Controller executors set to 0 to guarantee all jobs run on Kubernetes ephemeral workers.
+- Deployed before Harbor to allow Harbor to register and verify Jenkins OIDC trust during provisioning.
+- OpenID Connect Provider plugin (`oidc-provider`) configured to issue short-lived JWT tokens for jobs.
+- Dynamic ephemeral agent pods spun up in `giant-cluster` in namespace `jenkins-agents` via the Kubernetes plugin over WebSockets.
+- Gitea is configured with an OAuth2/OIDC authentication source pointing to Jenkins discovery endpoints.
+- Installs the validation utility `/usr/local/bin/test-jenkins-k8s-build`.
+
+### 4.8. Harbor Container Registry (roles/harbor)
 - Runs via Docker Compose with data in /data/harbor.
 - Secured with TLS via OpenBao Intermediate CA on port 443.
+- Configured with OIDC trust pointing to `https://jenkins.ratlab.dev` and trusted issuer registration.
 - Auto-seeds official MetalLB and ArgoCD Helm charts.
 
-### 4.8. Kubernetes Giant Cluster (roles/kind_cluster)
+### 4.9. Kubernetes Giant Cluster (roles/kind_cluster)
 - Runs a single giant Kind cluster named giant-cluster.
 - Node topology: 1 control plane node and 2 worker nodes.
 - Local API server binds to 127.0.0.1:6443.
 - Nginx proxies API traffic on port 443 for domain giant-cluster.k8s.ratlab.dev.
+- Configures devbox access for Jenkins user with cluster kubeconfig.
 - Trust: Configured with OpenBao Kubernetes authentication.
 - Secrets: Service accounts read secrets from /apps/secrets/<ns>_<sa>.
 - Networking: CoreDNS forwards internal domains to devbox DNS.
@@ -103,21 +126,21 @@ Setup runs in two distinct stages.
 - Kubeconfig: Generates unified kubeconfigs for devbox and remote Mac access.
 - Contexts: giant-cluster and context alias giant.
 
-### 4.9. ArgoCD GitOps (roles/argocd)
+### 4.10. ArgoCD GitOps (roles/argocd)
 - Deploys ArgoCD to giant-cluster in namespace argocd.
 - Web UI is accessible at https://argocd.ratlab.dev.
 - Synchronizes manifests from Gitea repository admin/gitops.
-- ApplicationSets deploy namespaces, platform tools, and workload apps.
+- ApplicationSets deploy namespaces, platform tools, workload apps, and Jenkins ephemeral agents RBAC (ServiceAccount, Role, RoleBinding).
 
-### 4.10. Verification Suite (roles/verify)
-- Tests DNS resolution for all ratlab.dev hostnames.
+### 4.11. Verification Suite (roles/verify)
+- Tests DNS resolution for all ratlab.dev hostnames (including Jenkins).
 - Tests Docker container execution.
-- Tests HTTPS health endpoints for Vault, Gitea, and Harbor.
-- Tests Kubernetes cluster health and node readiness.
+- Tests HTTPS health endpoints for Vault, Gitea, Jenkins (and OIDC discovery), and Harbor.
+- Tests Kubernetes cluster health and ephemeral agent ServiceAccount readiness.
 - Tests ArgoCD session and application status.
 - Prints a consolidated access dashboard.
 
-### 4.11. Devbox Cleanup (playbooks/cleanup.yml)
+### 4.12. Devbox Cleanup (playbooks/cleanup.yml)
 - Reverses configuration in opposite creation order.
 - Deletes Kind clusters and Nginx proxy sites.
 - Uninstalls services, packages, and CLI binaries.

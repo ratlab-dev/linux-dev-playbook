@@ -276,3 +276,51 @@
         PATH: "{{ helm_install_dir | default('/usr/local/bin') }}:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
       register: argocd_harbor_push
       changed_when: "'Successfully published' in argocd_harbor_push.stdout"
+
+- name: Configure Harbor trust for Jenkins OIDC Workload Identity
+  block:
+    - name: Configure Harbor OIDC provider settings via API
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ harbor_https_port }}/api/v2.0/configurations"
+        method: PUT
+        url_username: "admin"
+        url_password: "{{ harbor_admin_password }}"
+        validate_certs: false
+        body_format: json
+        body:
+          auth_mode: "oidc_auth"
+          oidc_name: "jenkins"
+          oidc_endpoint: "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+          oidc_client_id: "harbor"
+          oidc_client_secret: "jenkins-harbor-oidc-secret"
+          oidc_scope: "openid,profile,email"
+          oidc_verify_cert: false
+          oidc_auto_onboard: true
+          oidc_user_claim: "sub"
+        status_code:
+          - 200
+          - 204
+      register: harbor_oidc_config
+      failed_when: false
+
+    - name: Register Jenkins as Harbor Trusted Issuer for Keyless Workload Identity
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ harbor_https_port }}/api/v2.0/trusted-issuers"
+        method: POST
+        url_username: "admin"
+        url_password: "{{ harbor_admin_password }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "jenkins"
+          url: "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+          issuer: "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+          audience: "harbor"
+          enabled: true
+        status_code:
+          - 200
+          - 201
+          - 409
+      register: harbor_trusted_issuer
+      failed_when: false
+  when: jenkins_enable | default(true) | bool

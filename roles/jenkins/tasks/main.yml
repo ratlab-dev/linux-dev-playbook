@@ -1,0 +1,295 @@
+---
+# Tasks for role: jenkins (CI Controller with Kubernetes ephemeral agents & OIDC Workload Identity)
+
+- name: Create jenkins system group
+  ansible.builtin.group:
+    name: "{{ jenkins_group }}"
+    system: true
+    state: present
+
+- name: Create jenkins system user
+  ansible.builtin.user:
+    name: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    system: true
+    shell: /bin/bash
+    home: "{{ jenkins_home }}"
+    create_home: true
+    state: present
+
+- name: Ensure Jenkins home, casc, init, log, and tls directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0750'
+  loop:
+    - "{{ jenkins_home }}"
+    - "{{ jenkins_home }}/plugins"
+    - "{{ jenkins_casc_dir }}"
+    - "{{ jenkins_init_dir }}"
+    - "{{ jenkins_config_dir }}"
+    - "{{ jenkins_tls_dir }}"
+    - "/var/log/jenkins"
+    - "/usr/share/java"
+    - "/var/www/jenkins_oidc/.well-known"
+
+- name: Install Java 21 runtime package (Debian family)
+  ansible.builtin.apt:
+    name:
+      - openjdk-21-jre-headless
+      - fontconfig
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == 'Debian'
+
+- name: Set Java 21 as default alternative (Debian family)
+  ansible.builtin.shell: |
+    JAVA_21_PATH=$(update-alternatives --list java 2>/dev/null | grep -E 'java-21' | head -n 1 || true)
+    if [ -n "$JAVA_21_PATH" ]; then
+      update-alternatives --set java "$JAVA_21_PATH"
+    fi
+  changed_when: false
+  when: ansible_os_family == 'Debian'
+
+- name: Install Java 21 runtime package (RedHat family)
+  ansible.builtin.dnf:
+    name:
+      - java-21-openjdk-headless
+      - fontconfig
+    state: present
+  when: ansible_os_family == 'RedHat'
+
+- name: Install Java 21 runtime package (Arch family)
+  ansible.builtin.pacman:
+    name:
+      - jre21-openjdk-headless
+      - fontconfig
+    state: present
+  when: ansible_os_family == 'Archlinux'
+
+- name: Download Jenkins LTS WAR package
+  ansible.builtin.get_url:
+    url: "https://get.jenkins.io/war-stable/{{ jenkins_version }}/jenkins.war"
+    dest: "/usr/share/java/jenkins-{{ jenkins_version }}.war"
+    owner: root
+    group: root
+    mode: '0644'
+    timeout: 300
+
+- name: Link Jenkins WAR to active path
+  ansible.builtin.file:
+    src: "/usr/share/java/jenkins-{{ jenkins_version }}.war"
+    dest: "{{ jenkins_war_path }}"
+    state: link
+    force: true
+
+- name: Check if Jenkins Plugin Manager tool is downloaded
+  ansible.builtin.stat:
+    path: "{{ jenkins_plugin_manager_jar }}"
+  register: jenkins_pm_stat
+
+- name: Download Jenkins Plugin Installation Manager CLI
+  ansible.builtin.get_url:
+    url: "https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/{{ jenkins_plugin_manager_version }}/jenkins-plugin-manager-{{ jenkins_plugin_manager_version }}.jar"
+    dest: "{{ jenkins_plugin_manager_jar }}"
+    owner: root
+    group: root
+    mode: '0755'
+    timeout: 120
+  when: not jenkins_pm_stat.stat.exists
+
+- name: Check installed Jenkins plugins
+  ansible.builtin.stat:
+    path: "{{ jenkins_home }}/plugins/kubernetes.jpi"
+  register: k8s_plugin_check
+
+- name: Install Jenkins plugins via Jenkins Plugin Manager
+  ansible.builtin.command: >-
+    java -jar {{ jenkins_plugin_manager_jar }}
+    --war {{ jenkins_war_path }}
+    --plugin-download-directory {{ jenkins_home }}/plugins
+    --plugins {{ jenkins_plugins | join(' ') }}
+  args:
+    creates: "{{ jenkins_home }}/plugins/kubernetes.jpi"
+  environment:
+    JENKINS_HOME: "{{ jenkins_home }}"
+  timeout: 600
+
+- name: Fix ownership on Jenkins directories and files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    recurse: true
+  loop:
+    - "{{ jenkins_home }}"
+    - "{{ jenkins_config_dir }}"
+
+- name: Provision wildcard TLS certificates for Jenkins
+  block:
+    - name: Deploy central wildcard certificate to Jenkins TLS directory
+      ansible.builtin.copy:
+        src: /etc/ssl/certs/ratlab_wildcard.crt
+        dest: "{{ jenkins_tls_dir }}/jenkins.crt"
+        remote_src: true
+        owner: "{{ jenkins_user }}"
+        group: "{{ jenkins_group }}"
+        mode: '0640'
+
+    - name: Deploy central wildcard key to Jenkins TLS directory
+      ansible.builtin.copy:
+        src: /etc/ssl/private/ratlab_wildcard.key
+        dest: "{{ jenkins_tls_dir }}/jenkins.key"
+        remote_src: true
+        owner: "{{ jenkins_user }}"
+        group: "{{ jenkins_group }}"
+        mode: '0640'
+
+- name: Deploy static OIDC Discovery document fallback
+  ansible.builtin.template:
+    src: openid-configuration.json.j2
+    dest: /var/www/jenkins_oidc/.well-known/openid-configuration
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0644'
+
+- name: Deploy Jenkins Configuration as Code (JCasC) definition
+  ansible.builtin.template:
+    src: jenkins.yaml.j2
+    dest: "{{ jenkins_casc_dir }}/jenkins.yaml"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0640'
+  notify: Restart jenkins
+
+- name: Deploy Jenkins startup Groovy initialization script
+  ansible.builtin.template:
+    src: 00-basic-setup.groovy.j2
+    dest: "{{ jenkins_init_dir }}/00-basic-setup.groovy"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0640'
+  notify: Restart jenkins
+
+- name: Deploy Jenkins systemd service unit
+  ansible.builtin.template:
+    src: jenkins.service.j2
+    dest: /etc/systemd/system/jenkins.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart jenkins
+
+- name: Deploy Jenkins Nginx reverse proxy site configuration
+  ansible.builtin.template:
+    src: jenkins.nginx.conf.j2
+    dest: /etc/nginx/sites-available/jenkins.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Enable Jenkins Nginx site configuration
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/jenkins.conf
+    dest: /etc/nginx/sites-enabled/jenkins.conf
+    state: link
+  notify: Reload nginx
+
+- name: Validate Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Reload Nginx service
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+
+- name: Ensure Jenkins systemd service is started and enabled
+  ansible.builtin.systemd:
+    name: jenkins
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Register Jenkins DNS entry in ratlab dynamic DNS
+  ansible.builtin.copy:
+    dest: /etc/dnsmasq.hosts.d/jenkins.hosts
+    content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ jenkins_domain | default('jenkins.' ~ internal_domain) }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when: jenkins_domain is defined or internal_domain is defined
+
+- name: Ensure Jenkins is resolvable in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+    state: present
+
+- name: Wait for Jenkins HTTP internal port to be responding
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ jenkins_http_port }}/login"
+    method: GET
+    status_code: 200
+  register: jenkins_local_http_ready
+  until: jenkins_local_http_ready.status == 200
+  retries: 45
+  delay: 4
+
+- name: Wait for Jenkins Nginx HTTPS endpoint to be responding
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:443/login"
+    headers:
+      Host: "{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+    method: GET
+    validate_certs: false
+    status_code: 200
+  register: jenkins_https_ready
+  until: jenkins_https_ready.status == 200
+  retries: 30
+  delay: 3
+
+- name: Allow Jenkins ports in UFW if installed
+  block:
+    - name: Check if ufw is installed
+      ansible.builtin.command: which ufw
+      register: ufw_jenkins_check
+      changed_when: false
+      failed_when: false
+
+    - name: Allow Jenkins ports in UFW
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "ufw allow {{ jenkins_http_port }}/tcp"
+        - "ufw allow {{ jenkins_jnlp_port }}/tcp"
+      when: ufw_jenkins_check.rc == 0
+      changed_when: false
+
+- name: Register Jenkins OIDC Authentication Source in Gitea
+  ansible.builtin.shell: |
+    if ! su - {{ gitea_user | default('git') }} -c '/usr/local/bin/gitea admin auth list --config {{ gitea_custom | default("/etc/gitea") }}/app.ini' 2>/dev/null | grep -qi jenkins; then
+      su - {{ gitea_user | default('git') }} -c '/usr/local/bin/gitea admin auth add-oauth \
+        --name jenkins \
+        --provider openidConnect \
+        --key jenkins \
+        --secret jenkins \
+        --auto-discover-url https://{{ jenkins_domain | default("jenkins." ~ internal_domain) }}/.well-known/openid-configuration \
+        --scopes "openid profile email" \
+        --config {{ gitea_custom | default("/etc/gitea") }}/app.ini'
+    fi
+  register: gitea_jenkins_oauth
+  changed_when: "'Successfully' in gitea_jenkins_oauth.stdout or gitea_jenkins_oauth.rc == 0"
+  failed_when: false
+  when: gitea_enable | default(true) | bool
+
+- name: Deploy test-jenkins-k8s-build CLI verification tool
+  ansible.builtin.template:
+    src: test-jenkins-k8s-build.sh.j2
+    dest: /usr/local/bin/test-jenkins-k8s-build
+    owner: root
+    group: root
+    mode: '0755'

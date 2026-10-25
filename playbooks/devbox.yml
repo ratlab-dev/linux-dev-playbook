@@ -45,6 +45,14 @@
           when: not controller_root_ca_stat.stat.exists or controller_root_ca_stat.stat.size == 0
       tags: [always]
 
+    - name: Validate that all ports in ratlab_ports registry are strictly unique
+      ansible.builtin.assert:
+        that:
+          - (ratlab_ports.values() | list | length) == (ratlab_ports.values() | unique | list | length)
+        fail_msg: "Duplicate port detected in ratlab_ports! Each service must have a dedicated unique port."
+        success_msg: "All {{ ratlab_ports.values() | list | length }} service ports in ratlab_ports are unique."
+      tags: [always]
+
   roles:
     - role: baseline
       tags: [baseline]
@@ -68,6 +76,10 @@
     - role: gitea
       tags: [gitea]
       when: gitea_enable | default(true) | bool
+
+    - role: jenkins
+      tags: [jenkins]
+      when: jenkins_enable | default(true) | bool
 
     - role: harbor
       tags: [harbor]

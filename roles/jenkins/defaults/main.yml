@@ -1,0 +1,41 @@
+---
+# Defaults for role: jenkins (CI Controller with Kubernetes ephemeral agents & OIDC Workload Identity)
+
+jenkins_enable: true
+jenkins_version: "2.580.1"
+jenkins_domain: "jenkins.ratlab.dev"
+jenkins_http_port: "{{ (ratlab_ports | default({})).jenkins_http | default(8088) }}"
+jenkins_jnlp_port: "{{ (ratlab_ports | default({})).jenkins_jnlp | default(50000) }}"
+jenkins_user: "jenkins"
+jenkins_group: "jenkins"
+jenkins_home: "/var/lib/jenkins"
+jenkins_config_dir: "/etc/jenkins"
+jenkins_casc_dir: "/var/lib/jenkins/casc_configs"
+jenkins_init_dir: "/var/lib/jenkins/init.groovy.d"
+jenkins_tls_dir: "/etc/jenkins/tls"
+jenkins_war_path: "/usr/share/java/jenkins.war"
+jenkins_plugin_manager_version: "2.13.2"
+jenkins_plugin_manager_jar: "/usr/local/bin/jenkins-plugin-manager.jar"
+
+jenkins_admin_user: "admin"
+jenkins_admin_password: "admin"
+
+jenkins_agent_namespace: "jenkins-agents"
+jenkins_agent_service_account: "jenkins-agent"
+jenkins_k8s_cloud_name: "giant-cluster"
+
+# Core plugins required for JCasC, Kubernetes ephemeral agents, OIDC Workload Identity, Git, and Pipelines
+jenkins_plugins:
+  - "configuration-as-code"
+  - "kubernetes"
+  - "kubernetes-credentials-provider"
+  - "oidc-provider"
+  - "credentials-binding"
+  - "workflow-aggregator"
+  - "workflow-job"
+  - "workflow-cps"
+  - "pipeline-model-definition"
+  - "pipeline-stage-view"
+  - "git"
+  - "git-client"
+  - "plain-credentials"

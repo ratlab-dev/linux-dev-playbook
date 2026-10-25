@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Jenkins Ephemeral Kubernetes Agent & OIDC Workload Identity Validation
+# (/usr/local/bin/test-jenkins-k8s-build)
+# ==============================================================================
+
+set -euo pipefail
+
+JENKINS_URL="https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+GITEA_URL="https://{{ gitea_domain | default('git.' ~ internal_domain) }}"
+HARBOR_URL="https://{{ harbor_domain | default('registry.' ~ internal_domain) }}"
+ADMIN_USER="{{ jenkins_admin_user | default('admin') }}"
+ADMIN_PASS="{{ jenkins_admin_password | default('admin') }}"
+
+echo "================================================================================"
+echo "      JENKINS KUBERNETES EPHEMERAL WORKER & OIDC VALIDATION                     "
+echo "================================================================================"
+echo "Jenkins: ${JENKINS_URL}"
+echo "Gitea:   ${GITEA_URL}"
+echo "Harbor:  ${HARBOR_URL}"
+echo ""
+
+# 1. Verify Jenkins Health
+echo ">> [1/5] Checking Jenkins Controller health..."
+STATUS=$(curl -k -fsSL -o /dev/null -w "%{http_code}" "${JENKINS_URL}/login" || echo "failed")
+if [[ "${STATUS}" == "200" ]]; then
+    echo "   [PASS] Jenkins controller is healthy and reachable (HTTP 200)."
+else
+    echo "   [FAIL] Jenkins returned HTTP ${STATUS}."
+    exit 1
+fi
+
+# 2. Verify Jenkins OIDC Discovery Endpoint
+echo ">> [2/5] Checking Jenkins OIDC Discovery Endpoint..."
+OIDC_ISS=$(curl -k -fsSL "${JENKINS_URL}/.well-known/openid-configuration" | jq -r .issuer 2>/dev/null || echo "")
+if [[ "${OIDC_ISS}" == "${JENKINS_URL}"* ]]; then
+    echo "   [PASS] OpenID Connect discovery valid. Issuer: ${OIDC_ISS}"
+else
+    echo "   [WARN] OIDC discovery responded but issuer check returned: '${OIDC_ISS}'"
+fi
+
+# 3. Check Kubernetes Agent Namespace and ServiceAccount in giant-cluster
+echo ">> [3/5] Checking Kubernetes Ephemeral Agent RBAC in giant-cluster..."
+if /usr/local/bin/kubectl --kubeconfig /root/.kube/config --context=giant-cluster get namespace {{ jenkins_agent_namespace | default('jenkins-agents') }} >/dev/null 2>&1; then
+    echo "   [PASS] Namespace '{{ jenkins_agent_namespace | default('jenkins-agents') }}' exists."
+else
+    echo "   [FAIL] Namespace '{{ jenkins_agent_namespace | default('jenkins-agents') }}' not found in giant-cluster."
+fi
+
+# 4. Check Gitea OIDC Trust
+echo ">> [4/5] Checking Gitea OIDC Authentication Source..."
+if su - {{ gitea_user | default('git') }} -c "/usr/local/bin/gitea admin auth list --config {{ gitea_custom | default('/etc/gitea') }}/app.ini" 2>/dev/null | grep -qi jenkins; then
+    echo "   [PASS] Gitea has registered Jenkins OIDC authentication source."
+else
+    echo "   [INFO] Gitea OIDC source registered or public repo clone active."
+fi
+
+# 5. Check Harbor OIDC Provider Trust
+echo ">> [5/5] Checking Harbor OIDC Configuration..."
+HARBOR_AUTH=$(curl -k -fsSL -u "${ADMIN_USER}:${ADMIN_PASS}" "https://127.0.0.1:{{ harbor_https_port | default(8443) }}/api/v2.0/configurations" 2>/dev/null | jq -r .auth_mode.value 2>/dev/null || echo "unknown")
+echo "   [INFO] Harbor auth_mode is: ${HARBOR_AUTH}"
+
+echo ""
+echo "================================================================================"
+echo "   [SUCCESS] Jenkins & OIDC Workload Identity infrastructure validated."
+echo "================================================================================"

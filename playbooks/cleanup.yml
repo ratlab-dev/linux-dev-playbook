@@ -157,6 +157,56 @@
       tags: [never, data, harbor_data]
 
     # --------------------------------------------------------------------------
+    # STEP 2.5: Revert Jenkins CI Server & Kubernetes Agents
+    # --------------------------------------------------------------------------
+    - name: "[Step 2.5] Stop and disable Jenkins systemd service"
+      ansible.builtin.systemd:
+        name: jenkins
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [jenkins, systemd, cleanup]
+
+    - name: "[Step 2.5] Remove Jenkins systemd unit and reload daemon"
+      ansible.builtin.file:
+        path: /etc/systemd/system/jenkins.service
+        state: absent
+      notify: Reload systemd daemon
+      tags: [jenkins, systemd, cleanup]
+
+    - name: "[Step 2.5] Remove Jenkins Nginx reverse proxy configuration"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx/sites-enabled/jenkins.conf
+        - /etc/nginx/sites-available/jenkins.conf
+      failed_when: false
+      tags: [jenkins, nginx, cleanup]
+
+    - name: "[Step 2.5] Remove Jenkins WAR and CLI binaries"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/share/java/jenkins.war
+        - /usr/local/bin/jenkins-plugin-manager.jar
+        - /usr/local/bin/test-jenkins-k8s-build
+      tags: [jenkins, binaries, cleanup]
+
+    - name: "[Step 2.5] [DATA] Purge Jenkins persistent state and plugins"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/jenkins
+        - /var/log/jenkins
+        - /etc/jenkins
+        - /var/www/jenkins_oidc
+      when: cleanup_data | default(false) | bool
+      tags: [never, data, jenkins_data]
+
+    # --------------------------------------------------------------------------
     # STEP 3: Revert Gitea Service
     # --------------------------------------------------------------------------
     - name: "[Step 3] Stop and disable Gitea systemd service"

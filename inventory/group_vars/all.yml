@@ -4,9 +4,27 @@ internal_domain: "ratlab.dev"
 baseline_hostname: "{{ devbox_hostname | default('devbox.ratlab.dev') }}"
 
 # ==============================================================================
+# Centralized Service Port Allocation Registry
+# Enforces: Exactly one unique port mapped per system service
+# ==============================================================================
+ratlab_ports:
+  ssh: 22
+  dns: 53
+  nginx_http: 80
+  nginx_https: 443
+  gitea_ssh: 2222
+  gitea_http: 3000
+  kind_giant_api: 6443
+  harbor_http: 8080
+  jenkins_http: 8088        # Dedicated Jenkins controller HTTP (proxied by Nginx 443)
+  openbao_vault: 8200       # OpenBao Vault UI & API (proxied by Nginx 443)
+  harbor_https: 8443        # Harbor Docker Compose HTTPS (proxied by Nginx 443)
+  jenkins_jnlp: 50000       # Jenkins inbound agent JNLP port
+
+# ==============================================================================
 # Baseline Settings (Local execution on laptop via bootstrap.sh)
 # ==============================================================================
-baseline_ssh_port: 22
+baseline_ssh_port: "{{ ratlab_ports.ssh }}"
 baseline_ssh_permit_root_login: "prohibit-password"  # Key-based root login
 baseline_ssh_password_authentication: "yes"
 
@@ -63,6 +81,8 @@ dns_custom_records:
     ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
   - name: "git.ratlab.dev"
     ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
+  - name: "jenkins.ratlab.dev"
+    ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
   - name: "registry.ratlab.dev"
     ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
   - name: "harbor.ratlab.dev"
@@ -84,7 +104,7 @@ docker_log_max_file: "3"
 # ==============================================================================
 openbao_enable: true
 openbao_version: "2.1.0"
-openbao_port: 8200
+openbao_port: "{{ ratlab_ports.openbao_vault }}"
 openbao_domain: "vault.ratlab.dev"
 openbao_data_dir: "/var/lib/openbao/data"
 openbao_config_dir: "/etc/openbao"
@@ -113,11 +133,28 @@ openbao_pki_excluded_domains:
 gitea_enable: true
 gitea_version: "1.22.6"
 gitea_domain: "git.ratlab.dev"
-gitea_http_port: 3000
-gitea_ssh_port: 2222
+gitea_http_port: "{{ ratlab_ports.gitea_http }}"
+gitea_ssh_port: "{{ ratlab_ports.gitea_ssh }}"
 gitea_user: "git"
 gitea_home: "/var/lib/gitea"
 gitea_custom: "/etc/gitea"
+
+# ==============================================================================
+# Jenkins CI Controller & Kubernetes Ephemeral Agents Configuration
+# ==============================================================================
+jenkins_enable: true
+jenkins_version: "2.580.1"
+jenkins_domain: "jenkins.ratlab.dev"
+jenkins_http_port: "{{ ratlab_ports.jenkins_http }}"
+jenkins_jnlp_port: "{{ ratlab_ports.jenkins_jnlp }}"
+jenkins_user: "jenkins"
+jenkins_group: "jenkins"
+jenkins_home: "/var/lib/jenkins"
+jenkins_admin_user: "admin"
+jenkins_admin_password: "admin"
+jenkins_agent_namespace: "jenkins-agents"
+jenkins_agent_service_account: "jenkins-agent"
+jenkins_k8s_cloud_name: "giant-cluster"
 
 # ==============================================================================
 # Harbor Container Registry Configuration
@@ -126,8 +163,8 @@ harbor_enable: true
 harbor_version: "v2.11.1"
 harbor_domain: "registry.ratlab.dev"
 harbor_data_volume: "/data/harbor"
-harbor_http_port: 8080
-harbor_https_port: 8443
+harbor_http_port: "{{ ratlab_ports.harbor_http }}"
+harbor_https_port: "{{ ratlab_ports.harbor_https }}"
 harbor_admin_password: "admin"
 
 # ==============================================================================
@@ -146,7 +183,7 @@ kind_clusters:
     environment: "production"
     domain: "giant-cluster.k8s.ratlab.dev"
     alt_domain: "giant.k8s.ratlab.dev"
-    api_port: 6443
+    api_port: "{{ ratlab_ports.kind_giant_api }}"
     workers: 2
     labels:
       cluster-role: "tooling"

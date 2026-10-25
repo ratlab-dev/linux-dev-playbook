@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-agent-role-binding
+  namespace: jenkins-agents
+  labels:
+    app.kubernetes.io/name: jenkins-agent
+    app.kubernetes.io/part-of: jenkins
+    app.kubernetes.io/component: rbac
+    heritage: gitops
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-agent
+    namespace: jenkins-agents
+  - kind: ServiceAccount
+    name: default
+    namespace: jenkins-agents
+roleRef:
+  kind: Role
+  name: jenkins-agent-role
+  apiGroup: rbac.authorization.k8s.io

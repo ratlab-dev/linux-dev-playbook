@@ -1,0 +1,19 @@
+[Unit]
+Description=Jenkins Continuous Integration Server
+After=network.target
+
+[Service]
+Type=simple
+User={{ jenkins_user }}
+Group={{ jenkins_group }}
+Environment="JENKINS_HOME={{ jenkins_home }}"
+Environment="CASC_JENKINS_CONFIG={{ jenkins_casc_dir }}"
+Environment="JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Djava.awt.headless=true -Dorg.apache.commons.jelly.tags.fmt.timeZone=UTC"
+ExecStart=/usr/bin/java $JAVA_OPTS -jar {{ jenkins_war_path }} --httpPort={{ jenkins_http_port }} --httpListenAddress=127.0.0.1
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

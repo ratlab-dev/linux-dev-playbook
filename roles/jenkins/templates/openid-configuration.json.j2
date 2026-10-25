@@ -1,0 +1,23 @@
+{
+  "issuer": "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}",
+  "authorization_endpoint": "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/login",
+  "token_endpoint": "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/oidc/token",
+  "userinfo_endpoint": "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/oidc/userinfo",
+  "jwks_uri": "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/jwks",
+  "response_types_supported": [
+    "id_token",
+    "token",
+    "code"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "RS256"
+  ],
+  "scopes_supported": [
+    "openid",
+    "profile",
+    "email"
+  ]
+}

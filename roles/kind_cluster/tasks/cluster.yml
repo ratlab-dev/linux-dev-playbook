@@ -278,3 +278,23 @@
         owner: root
         group: root
         mode: '0600'
+
+- name: Configure Jenkins devbox user access to {{ current_cluster.name }}
+  block:
+    - name: Ensure Jenkins devbox user has kubeconfig directory
+      ansible.builtin.file:
+        path: /var/lib/jenkins/.kube
+        state: directory
+        owner: "{{ jenkins_user | default('jenkins') }}"
+        group: "{{ jenkins_group | default('jenkins') }}"
+        mode: '0750'
+
+    - name: Copy cluster kubeconfig for Jenkins service user
+      ansible.builtin.copy:
+        src: "{{ cluster_kubeconfig }}"
+        dest: /var/lib/jenkins/.kube/config
+        remote_src: true
+        owner: "{{ jenkins_user | default('jenkins') }}"
+        group: "{{ jenkins_group | default('jenkins') }}"
+        mode: '0600'
+  when: jenkins_enable | default(true) | bool

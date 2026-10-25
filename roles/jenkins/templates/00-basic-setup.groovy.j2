@@ -1,0 +1,46 @@
+import jenkins.model.*
+import hudson.security.*
+import jenkins.security.s2m.AdminWhitelistRule
+
+def instance = Jenkins.getInstance()
+
+// 1. Ensure Jenkins Root URL is configured
+def jlc = JenkinsLocationConfiguration.get()
+if (jlc != null) {
+    jlc.setUrl("https://{{ jenkins_domain | default('jenkins.ratlab.dev') }}/")
+    jlc.setAdminAddress("admin@{{ internal_domain | default('ratlab.dev') }}")
+    jlc.save()
+}
+
+// 2. Ensure Admin User exists with configured credentials
+def realm = instance.getSecurityRealm()
+if (!(realm instanceof HudsonPrivateSecurityRealm)) {
+    realm = new HudsonPrivateSecurityRealm(false)
+    instance.setSecurityRealm(realm)
+}
+
+def adminUser = realm.getUser("{{ jenkins_admin_user | default('admin') }}")
+if (adminUser == null || realm.getAllUsers().find { it.id == "{{ jenkins_admin_user | default('admin') }}" } == null) {
+    def user = realm.createAccount("{{ jenkins_admin_user | default('admin') }}", "{{ jenkins_admin_password | default('admin') }}")
+    user.save()
+} else {
+    adminUser.addProperty(hudson.security.HudsonPrivateSecurityRealm.Details.fromPlainPassword("{{ jenkins_admin_password | default('admin') }}"))
+    adminUser.save()
+}
+
+// 3. Configure Authorization Strategy: Logged in users can do anything, anonymous can read (OIDC discovery)
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(true)
+instance.setAuthorizationStrategy(strategy)
+
+// 4. Disable setup wizard permanently
+def installState = jenkins.install.InstallState.INITIAL_SETUP_COMPLETED
+if (instance.getInstallState() != installState) {
+    instance.setInstallState(installState)
+}
+
+// 5. Ensure CrumbIssuer allows proxying
+instance.setCrumbIssuer(new hudson.security.csrf.DefaultCrumbIssuer(true))
+
+instance.save()
+println("--> Basic Jenkins setup and security initialization completed successfully.")

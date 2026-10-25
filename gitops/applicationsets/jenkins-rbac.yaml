@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: jenkins-agents-rbac
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            cluster-role: tooling
+  template:
+    metadata:
+      name: '{{name}}-jenkins-agents-rbac'
+      annotations:
+        argocd.argoproj.io/sync-wave: "1"
+    spec:
+      project: default
+      source:
+        repoURL: https://git.ratlab.dev:3000/admin/gitops.git
+        targetRevision: HEAD
+        path: apps/jenkins-rbac
+      destination:
+        server: '{{server}}'
+        namespace: jenkins-agents
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true

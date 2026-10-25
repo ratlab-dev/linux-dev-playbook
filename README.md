@@ -28,6 +28,7 @@ The project has two setup stages.
                                            | - Docker engine
                                            | - OpenBao Vault PKI and Web UI
                                            | - Gitea Git service
+                                           | - Jenkins CI and OIDC Provider
                                            | - Harbor container registry
                                            | - Giant Kind cluster
                                            | - ArgoCD GitOps
@@ -276,6 +277,7 @@ linux-dev-playbook/
     ├── docker/             # Docker CE and context
     ├── openbao/            # Vault PKI and Web UI
     ├── gitea/              # Git service
+    ├── jenkins/            # CI controller, K8s ephemeral agents & OIDC
     ├── harbor/             # Registry and Helm charts
     ├── kind_cluster/       # Giant Kind cluster setup
     ├── argocd/             # GitOps deployment

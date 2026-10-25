@@ -280,8 +280,11 @@
 
     - name: "[Step 4] [DATA] Clean up local controller OpenBao init token"
       ansible.builtin.file:
-        path: "{{ playbook_dir }}/../files/openbao_init.json"
+        path: "{{ item }}"
         state: absent
+      loop:
+        - "{{ playbook_dir }}/../files/openbao_init.json"
+        - "{{ playbook_dir }}/../files/vault_credentials.json"
       delegate_to: localhost
       become: false
       when: cleanup_data | default(false) | bool

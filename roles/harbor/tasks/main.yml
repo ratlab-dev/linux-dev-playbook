@@ -207,6 +207,49 @@
 
 - name: Seed official Helm charts into Harbor OCI registry
   block:
+    - name: Determine system architecture for Helm binary
+      ansible.builtin.set_fact:
+        helm_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else 'arm64' }}"
+
+    - name: Check if Helm binary is installed
+      ansible.builtin.command: "{{ helm_install_dir | default('/usr/local/bin') }}/helm version --template '{% raw %}{{ .Version }}{% endraw %}'"
+      register: harbor_helm_check
+      changed_when: false
+      failed_when: false
+
+    - name: Download and install Helm binary for Harbor chart seeding
+      block:
+        - name: Download Helm archive
+          ansible.builtin.get_url:
+            url: "https://get.helm.sh/helm-{{ helm_version | default('v3.16.4') }}-linux-{{ helm_arch }}.tar.gz"
+            dest: "/tmp/helm-{{ helm_version | default('v3.16.4') }}.tar.gz"
+            mode: '0644'
+            timeout: 120
+
+        - name: Extract Helm to temporary directory
+          ansible.builtin.unarchive:
+            src: "/tmp/helm-{{ helm_version | default('v3.16.4') }}.tar.gz"
+            dest: "/tmp"
+            remote_src: true
+
+        - name: Install Helm binary to {{ helm_install_dir | default('/usr/local/bin') }}/helm
+          ansible.builtin.copy:
+            src: "/tmp/linux-{{ helm_arch }}/helm"
+            dest: "{{ helm_install_dir | default('/usr/local/bin') }}/helm"
+            owner: root
+            group: root
+            mode: '0755'
+            remote_src: true
+
+        - name: Clean up Helm temporary files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "/tmp/helm-{{ helm_version | default('v3.16.4') }}.tar.gz"
+            - "/tmp/linux-{{ helm_arch }}"
+      when: harbor_helm_check.rc != 0 or (helm_version | default('v3.16.4')) not in harbor_helm_check.stdout
+
     - name: Copy Helm chart upload scripts to devbox
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../scripts/{{ item }}"
@@ -221,11 +264,15 @@
     - name: Ensure official MetalLB chart is published to Harbor
       ansible.builtin.shell: |
         /usr/local/bin/upload-metallb-chart-to-harbor {{ metallb_version | default('0.14.9') | regex_replace('^v', '') }}
+      environment:
+        PATH: "{{ helm_install_dir | default('/usr/local/bin') }}:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
       register: metallb_harbor_push
       changed_when: "'Successfully published' in metallb_harbor_push.stdout"
 
     - name: Ensure official ArgoCD chart is published to Harbor
       ansible.builtin.shell: |
         /usr/local/bin/upload-argocd-chart-to-harbor {{ argocd_helm_chart_version | default('') }}
+      environment:
+        PATH: "{{ helm_install_dir | default('/usr/local/bin') }}:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
       register: argocd_harbor_push
       changed_when: "'Successfully published' in argocd_harbor_push.stdout"

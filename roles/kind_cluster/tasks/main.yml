@@ -11,6 +11,30 @@
     - name: Parse OpenBao initialization credentials
       ansible.builtin.set_fact:
         openbao_init_data: "{{ slurped_openbao_init.content | b64decode | from_json }}"
+
+    - name: Ensure OpenBao credentials exist on controller
+      ansible.builtin.copy:
+        content: "{{ openbao_init_data | to_nice_json }}\n"
+        dest: "{{ playbook_dir }}/../files/openbao_init.json"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Ensure rich vault credentials exist on controller
+      ansible.builtin.copy:
+        content: "{{ vault_credentials_summary | to_nice_json }}\n"
+        dest: "{{ playbook_dir }}/../files/vault_credentials.json"
+        mode: '0600'
+      vars:
+        vault_credentials_summary:
+          vault_url: "https://{{ openbao_domain | default('vault.ratlab.dev') }}"
+          internal_url: "http://127.0.0.1:{{ openbao_port | default(8200) }}"
+          root_token: "{{ openbao_init_data.root_token }}"
+          unseal_keys_b64: "{{ openbao_init_data.unseal_keys_b64 | default([]) }}"
+          unseal_keys_hex: "{{ openbao_init_data.unseal_keys_hex | default([]) }}"
+          login_cli_command: "export VAULT_ADDR='https://{{ openbao_domain | default('vault.ratlab.dev') }}' && vault login {{ openbao_init_data.root_token }}"
+      delegate_to: localhost
+      become: false
   when: openbao_init_data is not defined
   tags: [always]
 
@@ -31,6 +55,62 @@
 - name: Install Kind, kubectl, and Helm CLI binaries
   ansible.builtin.import_tasks: install_tools.yml
   tags: [kind, kind_install, k8s_tools]
+
+- name: Ensure Ratlab CA certificates are present on target devbox for clusters
+  block:
+    - name: Ensure /etc/openbao/tls and /etc/ssl/certs directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - /etc/openbao/tls
+        - /etc/ssl/certs
+
+    - name: Retrieve intermediate CA from OpenBao API if missing on devbox
+      ansible.builtin.shell: |
+        if [ ! -s /etc/openbao/tls/intermediate.crt ]; then
+          curl -fsSL http://127.0.0.1:{{ openbao_port | default(8200) }}/v1/{{ openbao_pki_mount | default('pki_ratlab') }}/ca/pem -o /etc/openbao/tls/intermediate.crt 2>/dev/null || true
+        fi
+        if [ -s /etc/openbao/tls/intermediate.crt ]; then
+          cp -f /etc/openbao/tls/intermediate.crt /etc/ssl/certs/intermediate.crt
+          chmod 644 /etc/openbao/tls/intermediate.crt /etc/ssl/certs/intermediate.crt
+        fi
+      changed_when: false
+
+    - name: Ensure intermediate.crt exists on devbox from controller if available
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+        dest: "{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - /etc/openbao/tls/intermediate.crt
+        - /etc/ssl/certs/intermediate.crt
+      when: (lookup('file', playbook_dir ~ '/../files/certs/intermediate.crt', errors='ignore') | length > 0)
+
+    - name: Ensure Root CA certificate is available on controller before deploying to devbox
+      ansible.builtin.command: "{{ playbook_dir }}/../scripts/fetch_root_ca_from_yubikey.sh {{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"
+      delegate_to: localhost
+      become: false
+      when: not (lookup('file', playbook_dir ~ '/../files/certs/ratlab-root-ca.crt', errors='ignore') | length > 0)
+      changed_when: true
+
+    - name: Ensure ratlab-root-ca exists on devbox
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"
+        dest: "{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - /etc/ssl/certs/ratlab-root-ca.pem
+        - /etc/ssl/certs/ratlab-root-ca.crt
+      when: (lookup('file', playbook_dir ~ '/../files/certs/ratlab-root-ca.crt', errors='ignore') | length > 0)
+  tags: [kind, kind_cluster]
 
 - name: Provision Kind clusters and configure networking & Vault trust
   ansible.builtin.include_tasks: cluster.yml

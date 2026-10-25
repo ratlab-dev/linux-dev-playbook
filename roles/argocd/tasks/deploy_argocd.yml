@@ -54,6 +54,8 @@
 - name: Ensure official ArgoCD chart is published to Harbor OCI registry
   ansible.builtin.shell: |
     /usr/local/bin/upload-argocd-chart-to-harbor {{ argocd_helm_chart_version | default('') }}
+  environment:
+    PATH: "{{ kind_install_dir | default('/usr/local/bin') }}:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
   register: argocd_harbor_push
   changed_when: "'Successfully published' in argocd_harbor_push.stdout"
 

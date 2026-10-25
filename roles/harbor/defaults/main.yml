@@ -10,3 +10,9 @@ harbor_tls_dir: "/etc/harbor/tls"
 harbor_http_port: 8080
 harbor_https_port: 8443
 harbor_admin_password: "admin"
+
+# Helm tooling required for seeding OCI charts
+helm_version: "v3.16.4"
+helm_install_dir: "/usr/local/bin"
+metallb_version: "v0.14.9"
+argocd_helm_chart_version: ""

@@ -174,7 +174,7 @@
       - "Workstation Access (from your Mac):"
       - "  Kubeconfig:       export KUBECONFIG={{ playbook_dir }}/../files/kubeconfig"
       - "  Contexts:         tooling-cluster, app-cluster-1, app-cluster-2"
-      - "  OpenBao UI:       https://{{ openbao_domain }}"
+      - "  OpenBao UI:       https://{{ openbao_domain }} (Credentials: files/vault_credentials.json / files/openbao_init.json)"
       - "  Gitea Web:        https://{{ gitea_domain }}:{{ gitea_http_port }}"
       - "  Harbor Registry:  https://{{ harbor_domain }}"
       - "  ArgoCD UI:        https://{{ argocd_domain | default('argocd.ratlab.dev') }} (admin / admin)"

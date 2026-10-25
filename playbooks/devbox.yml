@@ -2,6 +2,49 @@
 - name: Provision and Configure Linux Devbox
   hosts: devbox
   become: true
+  pre_tasks:
+    - name: Ensure Root CA certificate exists on controller (fetch from YubiKey if missing)
+      block:
+        - name: Check if Root CA certificate exists in files/certs on controller
+          ansible.builtin.stat:
+            path: "{{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"
+          register: controller_root_ca_stat
+          delegate_to: localhost
+          become: false
+          run_once: true
+
+        - name: Fetch Root CA certificate from YubiKey when missing on controller
+          block:
+            - name: Check if YubiKey is connected to controller
+              ansible.builtin.command: ykman list
+              delegate_to: localhost
+              become: false
+              register: ykman_list_check
+              changed_when: false
+              failed_when: false
+              run_once: true
+
+            - name: Prompt user to connect YubiKey if not detected
+              ansible.builtin.pause:
+                prompt: |
+
+                  ================================================================================
+                  ROOT CA CERTIFICATE NOT FOUND ON CONTROLLER (files/certs/ratlab-root-ca.crt)
+                  1. Connect your YubiKey Root CA to this Mac.
+                  2. Press [ENTER] to extract the Root CA certificate...
+                  ================================================================================
+              when: ykman_list_check.rc != 0 or (ykman_list_check.stdout | trim | length == 0)
+
+            - name: Export Root CA certificate from YubiKey on controller
+              ansible.builtin.command: "{{ playbook_dir }}/../scripts/fetch_root_ca_from_yubikey.sh {{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"
+              delegate_to: localhost
+              become: false
+              run_once: true
+              register: yubikey_root_ca_export
+              changed_when: "'Successfully fetched' in yubikey_root_ca_export.stdout"
+          when: not controller_root_ca_stat.stat.exists or controller_root_ca_stat.stat.size == 0
+      tags: [always]
+
   roles:
     - role: baseline
       tags: [baseline]

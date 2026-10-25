@@ -58,7 +58,14 @@ for c in "${CANDIDATE_CAS[@]}"; do
 done
 
 if [[ -z "${CA_CRT}" ]]; then
-    echo -e "${RED}[ERROR]${NC} Root CA certificate (root_ca.crt / ratlab-root-ca.crt) not found."
+    echo -e "${YELLOW}[INFO]${NC} Root CA certificate not found on disk. Fetching from connected YubiKey..."
+    if "${SCRIPT_DIR}/fetch_root_ca_from_yubikey.sh" "${REPO_ROOT}/files/certs/ratlab-root-ca.crt"; then
+        CA_CRT="${REPO_ROOT}/files/certs/ratlab-root-ca.crt"
+    fi
+fi
+
+if [[ -z "${CA_CRT}" || ! -f "${CA_CRT}" ]]; then
+    echo -e "${RED}[ERROR]${NC} Root CA certificate (root_ca.crt / ratlab-root-ca.crt) not found and could not be retrieved from YubiKey."
     exit 1
 fi
 

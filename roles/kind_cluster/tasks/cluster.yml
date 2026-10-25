@@ -117,6 +117,65 @@
 
 - name: Deploy Ratlab CA certificates and Cluster TLS secret into Kubernetes
   block:
+    - name: Ensure CA certificate files exist for Kubernetes ConfigMap
+      block:
+        - name: Ensure certificate directories exist on devbox
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+          loop:
+            - /etc/openbao/tls
+            - /etc/ssl/certs
+
+        - name: Retrieve intermediate CA from OpenBao API if missing on devbox
+          ansible.builtin.shell: |
+            if [ ! -s /etc/openbao/tls/intermediate.crt ]; then
+              curl -fsSL http://127.0.0.1:{{ openbao_port | default(8200) }}/v1/{{ openbao_pki_mount | default('pki_ratlab') }}/ca/pem -o /etc/openbao/tls/intermediate.crt 2>/dev/null || true
+            fi
+            if [ -s /etc/openbao/tls/intermediate.crt ]; then
+              cp -f /etc/openbao/tls/intermediate.crt /etc/ssl/certs/intermediate.crt
+              chmod 644 /etc/openbao/tls/intermediate.crt /etc/ssl/certs/intermediate.crt
+            fi
+          changed_when: false
+
+        - name: Ensure Root CA certificate is available on controller
+          ansible.builtin.command: "{{ playbook_dir }}/../scripts/fetch_root_ca_from_yubikey.sh {{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"
+          delegate_to: localhost
+          become: false
+          when: not (lookup('file', playbook_dir ~ '/../files/certs/ratlab-root-ca.crt', errors='ignore') | length > 0)
+          changed_when: true
+
+        - name: Deploy CA certificates from controller if available
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../files/certs/{{ item.src }}"
+            dest: "{{ item.dest }}"
+            owner: root
+            group: root
+            mode: '0644'
+          loop:
+            - { src: "intermediate.crt", dest: "/etc/openbao/tls/intermediate.crt" }
+            - { src: "intermediate.crt", dest: "/etc/ssl/certs/intermediate.crt" }
+            - { src: "ratlab-root-ca.crt", dest: "/etc/ssl/certs/ratlab-root-ca.pem" }
+            - { src: "ratlab-root-ca.crt", dest: "/etc/ssl/certs/ratlab-root-ca.crt" }
+          when: (lookup('file', playbook_dir ~ '/../files/certs/' ~ item.src, errors='ignore') | length > 0)
+
+        - name: Ensure Root CA certificate symlink or file exists on devbox
+          ansible.builtin.shell: |
+            if [ ! -s /etc/ssl/certs/ratlab-root-ca.pem ]; then
+              if [ -s /usr/local/share/ca-certificates/custom/ratlab-root-ca.crt ]; then
+                cp -f /usr/local/share/ca-certificates/custom/ratlab-root-ca.crt /etc/ssl/certs/ratlab-root-ca.pem
+              elif [ -s /etc/ssl/certs/ratlab-root-ca.crt ]; then
+                cp -f /etc/ssl/certs/ratlab-root-ca.crt /etc/ssl/certs/ratlab-root-ca.pem
+              fi
+            fi
+            if [ -s /etc/ssl/certs/ratlab-root-ca.pem ]; then
+              chmod 644 /etc/ssl/certs/ratlab-root-ca.pem
+            fi
+          changed_when: false
+
     - name: Create CA certificates ConfigMap in kube-system and default
       ansible.builtin.shell: |
         {{ kind_install_dir }}/kubectl --kubeconfig {{ cluster_kubeconfig }} create configmap ratlab-ca \

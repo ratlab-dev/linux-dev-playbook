@@ -140,6 +140,49 @@
     openbao_authenticated_env: "{{ openbao_env | combine({'VAULT_TOKEN': openbao_init_data.root_token, 'BAO_TOKEN': openbao_init_data.root_token}) }}"
   when: openbao_init_data is defined
 
+- name: Persist OpenBao / Vault initialization credentials to controller (files/openbao_init.json and files/vault_credentials.json)
+  block:
+    - name: Ensure files directory exists on controller
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../files"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: false
+
+    - name: Save /root/.openbao_init.json on target if missing
+      ansible.builtin.copy:
+        content: "{{ openbao_init_data | to_nice_json }}\n"
+        dest: "/root/.openbao_init.json"
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Save raw initialization credentials to files/openbao_init.json on controller
+      ansible.builtin.copy:
+        content: "{{ openbao_init_data | to_nice_json }}\n"
+        dest: "{{ playbook_dir }}/../files/openbao_init.json"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Save rich vault credentials to files/vault_credentials.json on controller
+      ansible.builtin.copy:
+        content: "{{ openbao_credentials_summary | to_nice_json }}\n"
+        dest: "{{ playbook_dir }}/../files/vault_credentials.json"
+        mode: '0600'
+      vars:
+        openbao_credentials_summary:
+          vault_url: "https://{{ openbao_domain }}"
+          internal_url: "http://127.0.0.1:{{ openbao_port }}"
+          root_token: "{{ openbao_init_data.root_token }}"
+          unseal_keys_b64: "{{ openbao_init_data.unseal_keys_b64 | default([]) }}"
+          unseal_keys_hex: "{{ openbao_init_data.unseal_keys_hex | default([]) }}"
+          login_cli_command: "export VAULT_ADDR='https://{{ openbao_domain }}' && vault login {{ openbao_init_data.root_token }}"
+      delegate_to: localhost
+      become: false
+  when: openbao_init_data is defined and openbao_init_data.root_token is defined
+
 - name: Configure Intermediate PKI engine (when authenticated)
   block:
     - name: Check enabled secrets engines
@@ -158,90 +201,197 @@
       environment: "{{ openbao_authenticated_env }}"
       changed_when: false
 
-    - name: Check if Intermediate CA already has a certificate configured
+    - name: Ensure Root CA certificate is available on controller (fetch from YubiKey if missing)
+      ansible.builtin.command: "{{ playbook_dir }}/../scripts/fetch_root_ca_from_yubikey.sh {{ openbao_pki_root_ca_file }}"
+      delegate_to: localhost
+      become: false
+      when: not (lookup('file', openbao_pki_root_ca_file, errors='ignore') | length > 0)
+      changed_when: true
+
+    - name: Check if Root CA certificate exists on controller
+      ansible.builtin.stat:
+        path: "{{ openbao_pki_root_ca_file }}"
+      register: local_root_ca_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Check if Intermediate CA already has a certificate configured in OpenBao
       ansible.builtin.command: "{{ openbao_install_dir }}/bao read -format=json {{ openbao_pki_mount }}/cert/ca"
       environment: "{{ openbao_authenticated_env }}"
       register: ca_read_check
       changed_when: false
       failed_when: false
 
-    - name: Generate Intermediate CA CSR if no CA cert exists
+    - name: Handle already-configured Intermediate CA in OpenBao
       block:
-        - name: Check if intermediate CSR already exists on target
+        - name: Ensure Intermediate CA certificate is exported from OpenBao to target
+          ansible.builtin.shell: |
+            set -e
+            mkdir -p {{ openbao_tls_dir }} /etc/ssl/certs
+            if [ -s "{{ openbao_tls_dir }}/intermediate.crt" ]; then
+              cp -f {{ openbao_tls_dir }}/intermediate.crt /etc/ssl/certs/intermediate.crt
+            else
+              curl -fsSL http://127.0.0.1:{{ openbao_port }}/v1/{{ openbao_pki_mount }}/ca/pem -o {{ openbao_tls_dir }}/intermediate.crt 2>/dev/null || true
+              if [ -s "{{ openbao_tls_dir }}/intermediate.crt" ]; then
+                cp -f {{ openbao_tls_dir }}/intermediate.crt /etc/ssl/certs/intermediate.crt
+              fi
+            fi
+            if [ -f "{{ openbao_tls_dir }}/intermediate.crt" ]; then
+              chown {{ openbao_user }}:{{ openbao_group }} {{ openbao_tls_dir }}/intermediate.crt
+              chmod 644 {{ openbao_tls_dir }}/intermediate.crt /etc/ssl/certs/intermediate.crt 2>/dev/null || true
+            fi
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: Fetch Intermediate CA certificate to controller if missing on controller
+          ansible.builtin.fetch:
+            src: "{{ openbao_tls_dir }}/intermediate.crt"
+            dest: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+            flat: true
+
+        - name: Assemble Intermediate CA certificate bundle on target
+          ansible.builtin.copy:
+            content: |
+              {{ lookup('ansible.builtin.file', playbook_dir ~ '/../files/certs/intermediate.crt', errors='ignore') | trim }}
+              {% if local_root_ca_stat.stat.exists %}
+              {{ lookup('ansible.builtin.file', openbao_pki_root_ca_file) | trim }}
+              {% endif %}
+            dest: "{{ openbao_tls_dir }}/intermediate_bundle.crt"
+            owner: "{{ openbao_user }}"
+            group: "{{ openbao_group }}"
+            mode: '0644'
+
+        - name: Display Intermediate CA active status banner
+          ansible.builtin.debug:
+            msg: "Intermediate CA is already configured and active in OpenBao PKI engine (No YubiKey required)."
+      when: ca_read_check.rc == 0
+
+    - name: Configure Intermediate CA certificate when missing in OpenBao
+      block:
+        - name: Check if intermediate certificate files exist on controller
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ playbook_dir }}/../files/certs/intermediate.crt"
+            - "{{ playbook_dir }}/../files/certs/intermediate.csr"
+          register: local_intermediate_files_stat
+          delegate_to: localhost
+          become: false
+
+        - name: Set facts for existing local intermediate certificate and CSR
+          ansible.builtin.set_fact:
+            local_intermediate_crt_exists: "{{ local_intermediate_files_stat.results[0].stat.exists }}"
+            local_intermediate_csr_exists: "{{ local_intermediate_files_stat.results[1].stat.exists }}"
+
+        - name: Check if intermediate CSR exists on target
           ansible.builtin.stat:
             path: "{{ openbao_tls_dir }}/intermediate.csr"
           register: target_intermediate_csr
 
-        - name: Generate internal intermediate CSR if not present
-          ansible.builtin.command: >-
-            {{ openbao_install_dir }}/bao write -format=json {{ openbao_pki_mount }}/intermediate/generate/internal
-            common_name="Ratlab Dev Intermediate CA"
-            key_type="rsa"
-            key_bits=2048
-          environment: "{{ openbao_authenticated_env }}"
-          register: intermediate_csr_output
-          when: not target_intermediate_csr.stat.exists
-
-        - name: Save intermediate CSR on target
+        - name: Restore intermediate CSR to target if present on controller
           ansible.builtin.copy:
-            content: "{{ (intermediate_csr_output.stdout | from_json).data.csr }}"
+            src: "{{ playbook_dir }}/../files/certs/intermediate.csr"
             dest: "{{ openbao_tls_dir }}/intermediate.csr"
             owner: "{{ openbao_user }}"
             group: "{{ openbao_group }}"
             mode: '0644'
-          when: not target_intermediate_csr.stat.exists
-
-        - name: Fetch intermediate CSR to controller for YubiKey Root CA signing
-          ansible.builtin.fetch:
-            src: "{{ openbao_tls_dir }}/intermediate.csr"
-            dest: "{{ playbook_dir }}/../files/certs/intermediate.csr"
-            flat: true
-
-        - name: Check if existing intermediate certificate on controller exists
-          ansible.builtin.stat:
-            path: "{{ playbook_dir }}/../files/certs/intermediate.crt"
-          register: local_intermediate_cert_stat
-          delegate_to: localhost
-          become: false
-
-        - name: Compare public keys between existing intermediate CRT and CSR
-          ansible.builtin.shell: >-
-            set -o pipefail;
-            CRT_PUB=$(openssl x509 -in {{ playbook_dir }}/../files/certs/intermediate.crt -noout -pubkey 2>/dev/null | openssl md5 || true);
-            CSR_PUB=$(openssl req -in {{ playbook_dir }}/../files/certs/intermediate.csr -noout -pubkey 2>/dev/null | openssl md5 || true);
-            if [ -n "$CRT_PUB" ] && [ -n "$CSR_PUB" ] && [ "$CRT_PUB" = "$CSR_PUB" ]; then
-              exit 0;
-            else
-              exit 1;
-            fi
-          register: intermediate_pubkey_match
-          delegate_to: localhost
-          become: false
-          changed_when: false
-          failed_when: false
-          when: local_intermediate_cert_stat.stat.exists
-
-        - name: Check if existing intermediate certificate on controller is valid for > 30 days
-          ansible.builtin.command: >-
-            openssl x509 -checkend 2592000 -noout -in {{ playbook_dir }}/../files/certs/intermediate.crt
-          register: intermediate_cert_checkend
-          delegate_to: localhost
-          become: false
-          changed_when: false
-          failed_when: false
           when:
-            - local_intermediate_cert_stat.stat.exists
-            - intermediate_pubkey_match.rc is defined and intermediate_pubkey_match.rc == 0
+            - not target_intermediate_csr.stat.exists
+            - local_intermediate_csr_exists | bool
 
-        - name: Determine if Intermediate CA requires YubiKey signing
-          ansible.builtin.set_fact:
-            intermediate_needs_signing: >-
-              {{ (not local_intermediate_cert_stat.stat.exists) or
-                 (intermediate_pubkey_match.rc | default(1) != 0) or
-                 (intermediate_cert_checkend.rc | default(1) != 0) }}
-
-        - name: Sign Intermediate CA using YubiKey on Mac
+        - name: Check validity and matching of existing intermediate certificate on controller
           block:
+            - name: Check if existing intermediate certificate on controller is valid for > 30 days
+              ansible.builtin.command: >-
+                openssl x509 -checkend 2592000 -noout -in {{ playbook_dir }}/../files/certs/intermediate.crt
+              register: intermediate_cert_checkend
+              delegate_to: localhost
+              become: false
+              changed_when: false
+              failed_when: false
+
+            - name: Compare public keys between existing intermediate CRT and CSR
+              ansible.builtin.shell: >-
+                CRT_PUB=$(openssl x509 -in {{ playbook_dir }}/../files/certs/intermediate.crt -noout -pubkey 2>/dev/null | openssl md5 || true);
+                CSR_PUB=$(openssl req -in {{ playbook_dir }}/../files/certs/intermediate.csr -noout -pubkey 2>/dev/null | openssl md5 || true);
+                if [ -n "$CRT_PUB" ] && [ -n "$CSR_PUB" ] && [ "$CRT_PUB" = "$CSR_PUB" ]; then
+                  exit 0;
+                else
+                  exit 1;
+                fi
+              register: intermediate_pubkey_match
+              delegate_to: localhost
+              become: false
+              changed_when: false
+              failed_when: false
+              when: local_intermediate_csr_exists | bool
+
+            - name: Try importing existing signed Intermediate CA certificate into OpenBao
+              block:
+                - name: Copy intermediate certificate to target
+                  ansible.builtin.copy:
+                    src: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+                    dest: "{{ openbao_tls_dir }}/intermediate.crt"
+                    owner: "{{ openbao_user }}"
+                    group: "{{ openbao_group }}"
+                    mode: '0644'
+
+                - name: Assemble Intermediate CA certificate bundle on target
+                  ansible.builtin.copy:
+                    content: |
+                      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../files/certs/intermediate.crt') | trim }}
+                      {% if local_root_ca_stat.stat.exists %}
+                      {{ lookup('ansible.builtin.file', openbao_pki_root_ca_file) | trim }}
+                      {% endif %}
+                    dest: "{{ openbao_tls_dir }}/intermediate_bundle.crt"
+                    owner: "{{ openbao_user }}"
+                    group: "{{ openbao_group }}"
+                    mode: '0644'
+
+                - name: Submit existing signed certificate bundle to OpenBao PKI
+                  ansible.builtin.command: "{{ openbao_install_dir }}/bao write {{ openbao_pki_mount }}/intermediate/set-signed certificate=@{{ openbao_tls_dir }}/intermediate_bundle.crt"
+                  environment: "{{ openbao_authenticated_env }}"
+                  register: import_existing_intermediate_result
+                  changed_when: true
+                  failed_when: false
+              when:
+                - intermediate_cert_checkend.rc == 0
+                - intermediate_pubkey_match.rc is defined and intermediate_pubkey_match.rc == 0
+          when: local_intermediate_crt_exists | bool
+
+        - name: Verify whether Intermediate CA is now active in OpenBao
+          ansible.builtin.command: "{{ openbao_install_dir }}/bao read -format=json {{ openbao_pki_mount }}/cert/ca"
+          environment: "{{ openbao_authenticated_env }}"
+          register: ca_read_check_after_existing
+          changed_when: false
+          failed_when: false
+
+        - name: Generate new Intermediate CA CSR and sign with YubiKey if still unconfigured
+          block:
+            - name: Generate internal intermediate CSR in OpenBao
+              ansible.builtin.command: >-
+                {{ openbao_install_dir }}/bao write -format=json {{ openbao_pki_mount }}/intermediate/generate/internal
+                common_name="Ratlab Dev Intermediate CA"
+                key_type="rsa"
+                key_bits=2048
+              environment: "{{ openbao_authenticated_env }}"
+              register: intermediate_csr_output
+
+            - name: Save newly generated intermediate CSR on target
+              ansible.builtin.copy:
+                content: "{{ (intermediate_csr_output.stdout | from_json).data.csr }}"
+                dest: "{{ openbao_tls_dir }}/intermediate.csr"
+                owner: "{{ openbao_user }}"
+                group: "{{ openbao_group }}"
+                mode: '0644'
+
+            - name: Fetch new intermediate CSR to controller for YubiKey Root CA signing
+              ansible.builtin.fetch:
+                src: "{{ openbao_tls_dir }}/intermediate.csr"
+                dest: "{{ playbook_dir }}/../files/certs/intermediate.csr"
+                flat: true
+
             - name: Prompt user to connect YubiKey for Intermediate CA
               ansible.builtin.pause:
                 prompt: |
@@ -265,52 +415,33 @@
               become: false
               register: yubikey_intermediate_result
               changed_when: true
-          when: intermediate_needs_signing | bool
+
+            - name: Copy newly signed intermediate certificate to target
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/../files/certs/intermediate.crt"
+                dest: "{{ openbao_tls_dir }}/intermediate.crt"
+                owner: "{{ openbao_user }}"
+                group: "{{ openbao_group }}"
+                mode: '0644'
+
+            - name: Assemble Intermediate CA certificate bundle with Root CA on target
+              ansible.builtin.copy:
+                content: |
+                  {{ lookup('ansible.builtin.file', playbook_dir ~ '/../files/certs/intermediate.crt') | trim }}
+                  {% if local_root_ca_stat.stat.exists %}
+                  {{ lookup('ansible.builtin.file', openbao_pki_root_ca_file) | trim }}
+                  {% endif %}
+                dest: "{{ openbao_tls_dir }}/intermediate_bundle.crt"
+                owner: "{{ openbao_user }}"
+                group: "{{ openbao_group }}"
+                mode: '0644'
+
+            - name: Submit newly signed certificate bundle to OpenBao intermediate PKI
+              ansible.builtin.command: "{{ openbao_install_dir }}/bao write {{ openbao_pki_mount }}/intermediate/set-signed certificate=@{{ openbao_tls_dir }}/intermediate_bundle.crt"
+              environment: "{{ openbao_authenticated_env }}"
+              changed_when: true
+          when: ca_read_check_after_existing.rc != 0
       when: ca_read_check.rc != 0
-
-    - name: Check if signed Intermediate CA certificate exists on controller
-      ansible.builtin.stat:
-        path: "{{ playbook_dir }}/../files/certs/intermediate.crt"
-      register: local_intermediate_cert
-      delegate_to: localhost
-      become: false
-
-    - name: Import signed Intermediate CA certificate into OpenBao
-      block:
-        - name: Check if Root CA certificate exists on controller
-          ansible.builtin.stat:
-            path: "{{ openbao_pki_root_ca_file }}"
-          register: local_root_ca_stat
-          delegate_to: localhost
-          become: false
-
-        - name: Copy intermediate certificate to target
-          ansible.builtin.copy:
-            src: "{{ playbook_dir }}/../files/certs/intermediate.crt"
-            dest: "{{ openbao_tls_dir }}/intermediate.crt"
-            owner: "{{ openbao_user }}"
-            group: "{{ openbao_group }}"
-            mode: '0644'
-
-        - name: Assemble Intermediate CA certificate bundle with Root CA on target
-          ansible.builtin.copy:
-            content: |
-              {{ lookup('ansible.builtin.file', playbook_dir ~ '/../files/certs/intermediate.crt') | trim }}
-              {% if local_root_ca_stat.stat.exists %}
-              {{ lookup('ansible.builtin.file', openbao_pki_root_ca_file) | trim }}
-              {% endif %}
-            dest: "{{ openbao_tls_dir }}/intermediate_bundle.crt"
-            owner: "{{ openbao_user }}"
-            group: "{{ openbao_group }}"
-            mode: '0644'
-
-        - name: Submit signed certificate bundle to OpenBao intermediate PKI
-          ansible.builtin.command: "{{ openbao_install_dir }}/bao write {{ openbao_pki_mount }}/intermediate/set-signed certificate=@{{ openbao_tls_dir }}/intermediate_bundle.crt"
-          environment: "{{ openbao_authenticated_env }}"
-          changed_when: true
-      when:
-        - local_intermediate_cert.stat.exists
-        - ca_read_check.rc != 0
 
     - name: Configure PKI role for Ratlab services (*.ratlab.dev)
       ansible.builtin.command: >-
@@ -412,3 +543,19 @@
         group: root
         mode: '0640'
   when: openbao_init_data is defined
+
+- name: Display OpenBao / Vault login credentials banner
+  ansible.builtin.debug:
+    msg:
+      - "================================================================================"
+      - "                      OPENBAO / VAULT CREDENTIALS                               "
+      - "================================================================================"
+      - "Web UI URL:   https://{{ openbao_domain }}"
+      - "Root Token:   {{ openbao_init_data.root_token }}"
+      - "Unseal Key:   {{ openbao_init_data.unseal_keys_b64[0] if (openbao_init_data.unseal_keys_b64 is defined and (openbao_init_data.unseal_keys_b64 | length > 0)) else 'N/A' }}"
+      - "Credentials saved to local controller (out of git):"
+      - "  - files/openbao_init.json"
+      - "  - files/vault_credentials.json"
+      - "CLI Login:    export VAULT_ADDR='https://{{ openbao_domain }}' && vault login {{ openbao_init_data.root_token }}"
+      - "================================================================================"
+  when: openbao_init_data is defined and openbao_init_data.root_token is defined

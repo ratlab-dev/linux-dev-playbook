@@ -4,6 +4,10 @@ __pycache__/
 .DS_Store
 .ansible/
 files/openbao_init.json
+files/vault_credentials.json
+files/vault_init.json
+files/*_credentials*
+files/*_init.json
 *.key
 *.csr
 files/certs/openbao.crt

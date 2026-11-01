@@ -28,7 +28,6 @@ jenkins_k8s_cloud_name: "giant-cluster"
 jenkins_plugins:
   - "configuration-as-code"
   - "kubernetes"
-  - "kubernetes-credentials-provider"
   - "oidc-provider"
   - "credentials-binding"
   - "workflow-aggregator"

@@ -18,43 +18,24 @@ jenkins:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: true  # Required for OpenID Connect discovery endpoints
 
-  clouds:
-    - kubernetes:
-        name: "{{ jenkins_k8s_cloud_name | default('giant-cluster') }}"
-        serverUrl: "https://{{ (kind_clusters | default([{}]))[0].domain | default('giant-cluster.k8s.ratlab.dev') }}"
-        jenkinsUrl: "https://{{ jenkins_domain | default('jenkins.ratlab.dev') }}"
-        namespace: "{{ jenkins_agent_namespace | default('jenkins-agents') }}"
-        webSocket: true
-        directConnection: false
-        skipTlsVerify: true
-        templates:
-          - name: "default"
-            label: "jenkins-agent k8s-agent ephemeral-agent"
-            nodeUsageMode: "NORMAL"
-            workspaceVolume:
-              emptyDirWorkspaceVolume:
-                memory: false
-            serviceAccount: "{{ jenkins_agent_service_account | default('jenkins-agent') }}"
-            containers:
-              - name: "jnlp"
-                image: "jenkins/inbound-agent:latest"
-                alwaysPullImage: false
-                workingDir: "/home/jenkins/agent"
-                resourceRequestCpu: "200m"
-                resourceLimitCpu: "1000m"
-                resourceRequestMemory: "256Mi"
-                resourceLimitMemory: "1024Mi"
-              - name: "builder"
-                image: "alpine/git:latest"
-                command: "cat"
-                ttyEnabled: true
-                alwaysPullImage: false
-                workingDir: "/home/jenkins/agent"
-
 unclassified:
   location:
     url: "https://{{ jenkins_domain | default('jenkins.ratlab.dev') }}/"
     adminAddress: "admin@{{ internal_domain | default('ratlab.dev') }}"
+  globalLibraries:
+    libraries:
+      - name: "ratlab-pipeline-library"
+        defaultVersion: "main"
+        implicit: true
+        allowVersionOverride: true
+        includeInChangesets: true
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/jenkins-shared-library.git"
+                traits:
+                  - "gitBranchDiscovery"
 
 credentials:
   system:

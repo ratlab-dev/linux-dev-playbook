@@ -165,3 +165,6 @@
       python3 -c "import sqlite3; conn = sqlite3.connect('{{ gitea_home }}/data/gitea.db'); c = conn.cursor(); c.execute(\"UPDATE user SET must_change_password = 0 WHERE name = 'admin'\"); conn.commit(); conn.close()"
     fi
   changed_when: false
+
+- name: Seed core development, shared library, and Helm repositories in Gitea
+  ansible.builtin.include_tasks: seed_repos.yml

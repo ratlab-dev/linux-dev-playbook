@@ -49,3 +49,14 @@ server {
         proxy_read_timeout 600s;
     }
 }
+
+# Redirect any incoming :8443 traffic for Jenkins strictly back to standard HTTPS (443)
+server {
+    listen 8443 ssl;
+    server_name {{ jenkins_domain | default('jenkins.' ~ internal_domain) }};
+
+    ssl_certificate /etc/ssl/certs/ratlab_wildcard.crt;
+    ssl_certificate_key /etc/ssl/private/ratlab_wildcard.key;
+
+    return 301 https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}$request_uri;
+}

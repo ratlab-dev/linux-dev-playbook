@@ -29,7 +29,7 @@
     fi
 
     # Ensure Harbor OCI registry URL and Gitea URL in manifests match variables
-    HARBOR_REGISTRY="{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ harbor_https_port | default(8443) }}"
+    HARBOR_REGISTRY="{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}"
     GITEA_URL="https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/{{ argocd_gitops_repo_name | default('gitops') }}.git"
 
     find /tmp/gitops-init -type f \( -name "*.yaml" -o -name "*.yml" \) -exec sed -i \

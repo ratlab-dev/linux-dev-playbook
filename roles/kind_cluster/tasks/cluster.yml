@@ -250,6 +250,22 @@
         name: nginx
         state: reloaded
 
+    - name: Configure Root CA and DNS host resolution inside all Kind cluster nodes
+      ansible.builtin.shell: |
+        NODES=$(docker ps --filter "label=io.x-k8s.kind.cluster={{ current_cluster.name }}" --format "{% raw %}{{.Names}}{% endraw %}")
+        for node in $NODES; do
+          if [ -s /etc/ssl/certs/ratlab-root-ca.pem ]; then
+            docker cp /etc/ssl/certs/ratlab-root-ca.pem "${node}:/usr/local/share/ca-certificates/ratlab-ca.crt"
+            docker exec "${node}" update-ca-certificates >/dev/null 2>&1 || true
+            docker exec "${node}" systemctl restart containerd >/dev/null 2>&1 || true
+          fi
+          docker exec "${node}" sh -c '
+            HOSTS_LINE="{{ tailscale_node_ip }} {{ harbor_domain | default("registry." ~ internal_domain) }} {{ gitea_domain | default("git." ~ internal_domain) }} {{ jenkins_domain | default("jenkins." ~ internal_domain) }}"
+            grep -qF "{{ harbor_domain | default("registry." ~ internal_domain) }}" /etc/hosts || echo "${HOSTS_LINE}" >> /etc/hosts
+          '
+        done
+      changed_when: false
+
 - name: Create cluster-admin ServiceAccount and generate long-lived token
   block:
     - name: Create cluster-admin-sa ServiceAccount
@@ -297,4 +313,27 @@
         owner: "{{ jenkins_user | default('jenkins') }}"
         group: "{{ jenkins_group | default('jenkins') }}"
         mode: '0600'
+
+    - name: Deploy Kubernetes cloud JCasC configuration for Jenkins (connecting via Nginx endpoint)
+      ansible.builtin.template:
+        src: jenkins-k8s-cloud.yaml.j2
+        dest: /var/lib/jenkins/casc_configs/10-k8s-cloud.yaml
+        owner: "{{ jenkins_user | default('jenkins') }}"
+        group: "{{ jenkins_group | default('jenkins') }}"
+        mode: '0640'
+
+    - name: Download jenkins-cli.jar if missing
+      ansible.builtin.get_url:
+        url: "http://127.0.0.1:{{ jenkins_http_port | default(8088) }}/jnlpJars/jenkins-cli.jar"
+        dest: /usr/local/bin/jenkins-cli.jar
+        mode: '0755'
+      failed_when: false
+
+    - name: Reload Jenkins JCasC configuration with active Kubernetes cluster through Nginx
+      ansible.builtin.command: >-
+        java -jar /usr/local/bin/jenkins-cli.jar -s https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/
+        -noCertificateCheck -auth {{ jenkins_admin_user | default('admin') }}:{{ jenkins_admin_password | default('admin') }}
+        reload-jcasc-configuration
+      failed_when: false
+      changed_when: true
   when: jenkins_enable | default(true) | bool

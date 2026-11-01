@@ -33,7 +33,7 @@
     enabled: true
     state: restarted
 
-- name: Allow Nginx HTTP (80) and HTTPS (443) ports in UFW
+- name: Configure Nginx firewall ports in UFW
   block:
     - name: Check if ufw is installed
       ansible.builtin.command: which ufw
@@ -41,11 +41,17 @@
       changed_when: false
       failed_when: false
 
-    - name: Allow HTTP and HTTPS traffic in UFW
+    - name: Ensure port 80 is closed in UFW
+      ansible.builtin.command: ufw delete allow 80/tcp
+      when: ufw_nginx_check.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Allow HTTPS traffic in UFW
       ansible.builtin.command: "{{ item }}"
       loop:
-        - "ufw allow 80/tcp"
         - "ufw allow 443/tcp"
+        - "ufw allow {{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}/tcp"
       when: ufw_nginx_check.rc == 0
       changed_when: false
 

@@ -10,15 +10,15 @@ baseline_hostname: "{{ devbox_hostname | default('devbox.ratlab.dev') }}"
 ratlab_ports:
   ssh: 22
   dns: 53
-  nginx_http: 80
   nginx_https: 443
+  nginx_https_alt: 8443     # Nginx reverse proxy alt-port (routes registry)
   gitea_ssh: 2222
   gitea_http: 3000
   kind_giant_api: 6443
-  harbor_http: 8080
+  harbor_http: 8085         # Internal Harbor Docker HTTP
   jenkins_http: 8088        # Dedicated Jenkins controller HTTP (proxied by Nginx 443)
   openbao_vault: 8200       # OpenBao Vault UI & API (proxied by Nginx 443)
-  harbor_https: 8443        # Harbor Docker Compose HTTPS (proxied by Nginx 443)
+  harbor_https: 8444        # Internal Harbor Docker HTTPS (proxied by Nginx 443/8443)
   jenkins_jnlp: 50000       # Jenkins inbound agent JNLP port
 
 # ==============================================================================

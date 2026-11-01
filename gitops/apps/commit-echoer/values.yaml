@@ -1,0 +1,11 @@
+# Manifest customizations for commit-echoer
+deployment:
+  enabled: true
+  replicas: 1
+
+service:
+  enabled: false  # Pure worker app: no Kubernetes service needed
+
+serviceAccount:
+  create: true
+  name: commit-echoer

@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: commit-echoer
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    # 1. Generic application Helm chart from Harbor OCI registry (pushed by Jenkins)
+    - repoURL: registry.ratlab.dev:8443/library
+      chart: generic-app
+      targetRevision: 0.1.0
+      helm:
+        valueFiles:
+          - $values/apps/commit-echoer/values.yaml
+          - $values/apps/commit-echoer/images.yaml
+    # 2. Values & Images source from GitOps repository
+    - repoURL: https://git.ratlab.dev:3000/admin/gitops.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

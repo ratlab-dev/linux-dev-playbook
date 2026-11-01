@@ -4,6 +4,9 @@
     "max-size": "{{ docker_log_max_size }}",
     "max-file": "{{ docker_log_max_file }}"
   },
+{% if docker_dns is defined and docker_dns | length > 0 %}
+  "dns": {{ docker_dns | to_json }},
+{% endif %}
   "features": {
     "buildkit": true
   }

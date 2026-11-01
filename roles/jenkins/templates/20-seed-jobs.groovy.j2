@@ -1,0 +1,56 @@
+// Managed by Ansible (roles/jenkins)
+// Automatic seeding of application pipeline jobs
+
+import jenkins.model.*
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import hudson.plugins.git.*
+import hudson.plugins.git.extensions.impl.*
+
+def createOrUpdatePipeline(String jobName, String repoUrl, String jenkinsfilePath = "Jenkinsfile") {
+    Jenkins j = Jenkins.get()
+    WorkflowJob job = j.getItem(jobName) as WorkflowJob
+    if (job == null) {
+        println("Creating Jenkins Pipeline Job: ${jobName}...")
+        job = j.createProject(WorkflowJob.class, jobName)
+    } else {
+        println("Updating existing Jenkins Pipeline Job: ${jobName}...")
+    }
+
+    UserRemoteConfig userRemoteConfig = new UserRemoteConfig(repoUrl, null, null, null)
+    List<BranchSpec> branches = Collections.singletonList(new BranchSpec("*/main"))
+    
+    // Disable SSL verification for internal self-signed git repository
+    GitSCM scm = new GitSCM(
+        Collections.singletonList(userRemoteConfig),
+        branches,
+        false,
+        Collections.emptyList(),
+        null,
+        null,
+        Collections.emptyList()
+    )
+
+    CpsScmFlowDefinition flowDef = new CpsScmFlowDefinition(scm, jenkinsfilePath)
+    flowDef.setLightweight(true)
+    job.setDefinition(flowDef)
+    job.save()
+    println("Successfully configured Jenkins Pipeline Job: ${jobName}")
+}
+
+try {
+    createOrUpdatePipeline(
+        "commit-echoer",
+        "https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/commit-echoer.git",
+        "Jenkinsfile"
+    )
+
+    createOrUpdatePipeline(
+        "app-helm-charts-publisher",
+        "https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/app-helm-charts.git",
+        "Jenkinsfile"
+    )
+} catch (Exception e) {
+    println("Error seeding Jenkins pipeline jobs: " + e.getMessage())
+    e.printStackTrace()
+}

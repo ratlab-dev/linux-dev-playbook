@@ -1,0 +1,68 @@
+---
+# Tasks for provisioning and seeding application & pipeline repositories in Gitea
+
+- name: Ensure Gitea repositories exist via Gitea API
+  ansible.builtin.shell: |
+    REPO="{{ item }}"
+    STATUS=$(curl -sk -u admin:admin -o /dev/null -w "%{http_code}" "https://127.0.0.1:{{ gitea_http_port | default(3000) }}/api/v1/repos/admin/${REPO}")
+    if [ "$STATUS" = "404" ]; then
+      curl -sk -u admin:admin -X POST "https://127.0.0.1:{{ gitea_http_port | default(3000) }}/api/v1/user/repos" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"${REPO}\",\"private\":false,\"auto_init\":false,\"description\":\"Automated repository managed by Ansible\"}"
+    fi
+  loop:
+    - "commit-echoer"
+    - "jenkins-shared-library"
+    - "app-helm-charts"
+  register: gitea_repo_creation
+  changed_when: false
+
+- name: Ensure staging directory for Gitea seed repositories exists
+  ansible.builtin.file:
+    path: "/tmp/gitea_seed/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "commit-echoer"
+    - "jenkins-shared-library"
+    - "app-helm-charts"
+
+- name: Copy repository contents to staging directories
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/gitea_repos/{{ item }}/"
+    dest: "/tmp/gitea_seed/{{ item }}/"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - "commit-echoer"
+    - "jenkins-shared-library"
+    - "app-helm-charts"
+
+- name: Initialize Git repositories and push to Gitea
+  ansible.builtin.shell: |
+    REPO="{{ item }}"
+    cd "/tmp/gitea_seed/${REPO}"
+    if [ ! -d .git ]; then
+      git init -b main
+    fi
+    git config user.name "Ratlab Administrator"
+    git config user.email "admin@{{ internal_domain | default('ratlab.dev') }}"
+    git config http.sslVerify false
+
+    git add -A
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+      git commit -m "Initial commit for ${REPO} [Ansible Automation]"
+    fi
+
+    git remote remove origin 2>/dev/null || true
+    git remote add origin "https://admin:admin@127.0.0.1:{{ gitea_http_port | default(3000) }}/admin/${REPO}.git"
+    git push -f -u origin main
+  loop:
+    - "commit-echoer"
+    - "jenkins-shared-library"
+    - "app-helm-charts"
+  register: gitea_push_result
+  changed_when: "'Branch' in gitea_push_result.stderr or 'To ' in gitea_push_result.stderr"

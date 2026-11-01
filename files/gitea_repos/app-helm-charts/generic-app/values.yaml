@@ -1,0 +1,32 @@
+# Default values for generic-app.
+# These values can be overridden via custom values.yaml and images.yaml in GitOps.
+
+deployment:
+  enabled: true
+  replicas: 1
+
+image:
+  repository: "registry.ratlab.dev:8443/library/commit-echoer"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+serviceAccount:
+  create: true
+  name: ""
+
+sidecars: []
+  # - name: sidecar-example
+  #   image: "registry.ratlab.dev:8443/library/sidecar:latest"
+  #   command: []
+  #   args: []
+  #   env: []
+  #   resources: {}
+
+env: []
+resources: {}

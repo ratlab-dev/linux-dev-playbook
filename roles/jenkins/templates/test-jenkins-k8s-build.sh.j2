@@ -56,9 +56,40 @@ else
 fi
 
 # 5. Check Harbor OIDC Provider Trust
-echo ">> [5/5] Checking Harbor OIDC Configuration..."
-HARBOR_AUTH=$(curl -k -fsSL -u "${ADMIN_USER}:${ADMIN_PASS}" "https://127.0.0.1:{{ harbor_https_port | default(8443) }}/api/v2.0/configurations" 2>/dev/null | jq -r .auth_mode.value 2>/dev/null || echo "unknown")
+echo ">> [5/8] Checking Harbor OIDC Configuration..."
+HARBOR_AUTH=$(curl -k -fsSL -u "${ADMIN_USER}:${ADMIN_PASS}" "https://127.0.0.1:{{ harbor_https_port | default(8444) }}/api/v2.0/configurations" 2>/dev/null | jq -r .auth_mode.value 2>/dev/null || echo "unknown")
 echo "   [INFO] Harbor auth_mode is: ${HARBOR_AUTH}"
+
+# 6. Check Gitea Application & Pipeline Repositories
+echo ">> [6/8] Checking Gitea Repositories (commit-echoer, shared-library, app-helm-charts)..."
+for repo in commit-echoer jenkins-shared-library app-helm-charts; do
+    R_CODE=$(curl -sk -u "${ADMIN_USER}:${ADMIN_PASS}" -o /dev/null -w "%{http_code}" "${GITEA_URL}/api/v1/repos/admin/${repo}" || echo "failed")
+    if [[ "${R_CODE}" == "200" ]]; then
+        echo "   [PASS] Gitea repo '${repo}' exists."
+    else
+        echo "   [WARN] Gitea repo '${repo}' returned HTTP ${R_CODE}."
+    fi
+done
+
+# 7. Check Harbor OCI Artifacts (generic-app chart & commit-echoer scratch image)
+echo ">> [7/8] Checking Harbor OCI Artifacts..."
+IMG_CHECK=$(curl -sk -u "${ADMIN_USER}:${ADMIN_PASS}" -o /dev/null -w "%{http_code}" "https://127.0.0.1:{{ harbor_https_port | default(8444) }}/api/v2.0/projects/library/repositories/commit-echoer" || echo "failed")
+if [[ "${IMG_CHECK}" == "200" ]]; then
+    echo "   [PASS] Harbor container repository 'library/commit-echoer' exists."
+else
+    echo "   [INFO] Harbor repository 'library/commit-echoer' status: HTTP ${IMG_CHECK}."
+fi
+
+# 8. Check Jenkins Pipeline Jobs
+echo ">> [8/8] Checking Jenkins Pipeline Jobs..."
+if [ -f /usr/local/bin/jenkins-cli.jar ]; then
+    JOBS=$(java -jar /usr/local/bin/jenkins-cli.jar -s "${JENKINS_URL}/" -auth "${ADMIN_USER}:${ADMIN_PASS}" -noCertificateCheck list-jobs 2>/dev/null || true)
+    if echo "${JOBS}" | grep -q "commit-echoer"; then
+        echo "   [PASS] Jenkins pipeline 'commit-echoer' is registered."
+    else
+        echo "   [INFO] Jenkins pipeline 'commit-echoer' not listed."
+    fi
+fi
 
 echo ""
 echo "================================================================================"

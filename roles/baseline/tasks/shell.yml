@@ -42,14 +42,14 @@
 
       # fzf fuzzy completions & keybindings
       if command -v fzf >/dev/null 2>&1 && [ -n "$BASH_VERSION" ]; then
-        [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
-        [ -f /usr/share/doc/fzf/examples/completion.bash ] && source /usr/share/doc/fzf/examples/completion.bash
-        [ -f /etc/bash_completion.d/fzf ] && source /etc/bash_completion.d/fzf
+        [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && . /usr/share/doc/fzf/examples/key-bindings.bash
+        [ -f /usr/share/doc/fzf/examples/completion.bash ] && . /usr/share/doc/fzf/examples/completion.bash
+        [ -f /etc/bash_completion.d/fzf ] && . /etc/bash_completion.d/fzf
       fi
 
       # Kubernetes completions and shortcuts
       if command -v kubectl >/dev/null 2>&1 && [ -n "$BASH_VERSION" ]; then
-        source <(kubectl completion bash) 2>/dev/null || true
+        eval "$(kubectl completion bash 2>/dev/null)" || true
         alias k=kubectl
         complete -o default -F __start_kubectl k 2>/dev/null || true
       fi

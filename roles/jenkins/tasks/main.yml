@@ -174,6 +174,14 @@
     mode: '0640'
   notify: Restart jenkins
 
+- name: Deploy Jenkins pipeline job seeding Groovy script
+  ansible.builtin.template:
+    src: 20-seed-jobs.groovy.j2
+    dest: "{{ jenkins_init_dir }}/20-seed-jobs.groovy"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0640'
+
 - name: Deploy Jenkins systemd service unit
   ansible.builtin.template:
     src: jenkins.service.j2
@@ -253,6 +261,20 @@
   retries: 30
   delay: 3
 
+- name: Verify Jenkins Nginx alt HTTPS (8443) redirects to canonical 443
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:8443/login"
+    headers:
+      Host: "{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+    method: GET
+    validate_certs: false
+    status_code: 301
+    follow_redirects: none
+  register: jenkins_https_alt_ready
+  until: jenkins_https_alt_ready.status == 301
+  retries: 30
+  delay: 3
+
 - name: Allow Jenkins ports in UFW if installed
   block:
     - name: Check if ufw is installed
@@ -293,3 +315,17 @@
     owner: root
     group: root
     mode: '0755'
+
+- name: Reload Jenkins JCasC configuration and apply Shared Library
+  ansible.builtin.shell: |
+    if [ -f /usr/local/bin/jenkins-cli.jar ]; then
+      java -jar /usr/local/bin/jenkins-cli.jar -s "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/" -auth "{{ jenkins_admin_user }}:{{ jenkins_admin_password }}" -noCertificateCheck reload-jcasc-configuration || true
+    fi
+  changed_when: false
+
+- name: Execute Jenkins job seeding Groovy script
+  ansible.builtin.shell: |
+    if [ -f /usr/local/bin/jenkins-cli.jar ] && [ -f "{{ jenkins_init_dir }}/20-seed-jobs.groovy" ]; then
+      java -jar /usr/local/bin/jenkins-cli.jar -s "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}/" -auth "{{ jenkins_admin_user }}:{{ jenkins_admin_password }}" -noCertificateCheck groovy = < "{{ jenkins_init_dir }}/20-seed-jobs.groovy" || true
+    fi
+  changed_when: false

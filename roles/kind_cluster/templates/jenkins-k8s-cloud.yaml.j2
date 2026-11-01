@@ -1,0 +1,37 @@
+# Jenkins Configuration as Code (JCasC) - Kubernetes Ephemeral Cloud
+# Managed by Ansible (roles/kind_cluster)
+# Connected via Nginx reverse proxy endpoint
+
+jenkins:
+  clouds:
+    - kubernetes:
+        name: "{{ current_cluster.name }}"
+        serverUrl: "https://{{ current_cluster.domain }}"
+        jenkinsUrl: "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
+        namespace: "{{ jenkins_agent_namespace | default('jenkins-agents') }}"
+        webSocket: true
+        directConnection: false
+        skipTlsVerify: true
+        templates:
+          - name: "default"
+            label: "jenkins-agent k8s-agent ephemeral-agent"
+            nodeUsageMode: "NORMAL"
+            workspaceVolume:
+              emptyDirWorkspaceVolume:
+                memory: false
+            serviceAccount: "{{ jenkins_agent_service_account | default('jenkins-agent') }}"
+            containers:
+              - name: "jnlp"
+                image: "jenkins/inbound-agent:latest"
+                alwaysPullImage: false
+                workingDir: "/home/jenkins/agent"
+                resourceRequestCpu: "200m"
+                resourceLimitCpu: "1000m"
+                resourceRequestMemory: "256Mi"
+                resourceLimitMemory: "1024Mi"
+              - name: "builder"
+                image: "alpine/git:latest"
+                command: "cat"
+                ttyEnabled: true
+                alwaysPullImage: false
+                workingDir: "/home/jenkins/agent"

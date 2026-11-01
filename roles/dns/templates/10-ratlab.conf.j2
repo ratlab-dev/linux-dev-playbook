@@ -1,12 +1,8 @@
 # Managed by Ansible (roles/dns)
 # dnsmasq configuration for {{ dns_domain }}
 
-# Listen on Tailscale interface and local IP
+# Bind dynamically to all local interfaces (Tailscale, loopback, Docker bridges, LAN)
 bind-dynamic
-{% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
-listen-address={{ tailscale_node_ip }}
-{% endif %}
-listen-address=127.0.0.1
 
 # Never forward plain names without dots
 domain-needed

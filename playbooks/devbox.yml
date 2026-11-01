@@ -53,6 +53,18 @@
         success_msg: "All {{ ratlab_ports.values() | list | length }} service ports in ratlab_ports are unique."
       tags: [always]
 
+    - name: Detect Tailscale IPv4 address for dynamic DNS and host records
+      ansible.builtin.command: tailscale ip -4
+      register: devbox_ts_ip
+      changed_when: false
+      failed_when: false
+      tags: [always]
+
+    - name: Set tailscale_node_ip fact for all roles
+      ansible.builtin.set_fact:
+        tailscale_node_ip: "{{ devbox_ts_ip.stdout.strip() if (devbox_ts_ip.rc == 0 and devbox_ts_ip.stdout.strip() | length > 0) else (ansible_host | default(ansible_default_ipv4.address)) }}"
+      tags: [always]
+
   roles:
     - role: baseline
       tags: [baseline]

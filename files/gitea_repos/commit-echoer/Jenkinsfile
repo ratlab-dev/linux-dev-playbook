@@ -1,0 +1,6 @@
+@Library('ratlab-pipeline-library') _
+
+buildAppImage(
+    appName: 'commit-echoer',
+    imageRepo: 'library/commit-echoer'
+)

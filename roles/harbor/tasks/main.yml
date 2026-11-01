@@ -110,6 +110,13 @@
   when: harbor_config.changed or not harbor_install_script.stat.exists
   changed_when: true
 
+- name: Bind Harbor proxy ports to localhost only
+  ansible.builtin.replace:
+    path: "{{ harbor_install_dir }}/docker-compose.yml"
+    regexp: '^\s*-\s*([0-9]+:(?:8080|8443))'
+    replace: '      - 127.0.0.1:\1'
+  when: harbor_config.changed or not harbor_install_script.stat.exists
+
 - name: Deploy Harbor systemd service unit
   ansible.builtin.template:
     src: harbor.service.j2
@@ -118,6 +125,13 @@
     group: root
     mode: '0644'
 
+- name: Restart Harbor containers if config changed
+  ansible.builtin.systemd:
+    name: harbor
+    state: restarted
+    daemon_reload: true
+  when: harbor_config.changed
+
 - name: Start Harbor containers via systemd
   ansible.builtin.systemd:
     name: harbor
@@ -125,7 +139,7 @@
     enabled: true
     state: started
 
-- name: Allow Harbor ports (HTTP 8080, HTTPS 443) in UFW if installed
+- name: Allow Harbor Nginx alt HTTPS port in UFW if installed
   block:
     - name: Check if ufw is installed
       ansible.builtin.command: which ufw
@@ -136,8 +150,7 @@
     - name: Allow Harbor traffic in UFW
       ansible.builtin.command: "{{ item }}"
       loop:
-        - "ufw allow {{ harbor_http_port }}/tcp"
-        - "ufw allow {{ harbor_https_port }}/tcp"
+        - "ufw allow {{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}/tcp"
       when: ufw_harbor_check.rc == 0
       changed_when: false
 
@@ -276,6 +289,39 @@
         PATH: "{{ helm_install_dir | default('/usr/local/bin') }}:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
       register: argocd_harbor_push
       changed_when: "'Successfully published' in argocd_harbor_push.stdout"
+
+    - name: Publish generic-app Helm chart to Harbor OCI registry
+      ansible.builtin.shell: |
+        set -e
+        CHART_DIR="/tmp/gitea_seed/app-helm-charts/generic-app"
+        if [ -d "$CHART_DIR" ]; then
+          TMP_PKG_DIR="/tmp/helm-pkg-generic-app"
+          rm -rf "$TMP_PKG_DIR"
+          mkdir -p "$TMP_PKG_DIR"
+          cd "$TMP_PKG_DIR"
+          /usr/local/bin/helm package "$CHART_DIR"
+          echo "{{ harbor_admin_password | default('admin') }}" | /usr/local/bin/helm registry login "{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}" --username admin --password-stdin --insecure
+          PKG=$(ls generic-app-*.tgz | head -n 1)
+          /usr/local/bin/helm push "$PKG" "oci://{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}/library"
+        fi
+      changed_when: false
+
+    - name: Build and push initial commit-echoer scratch image to Harbor
+      ansible.builtin.shell: |
+        set -e
+        SRC_DIR="/tmp/gitea_seed/commit-echoer"
+        if [ -d "$SRC_DIR" ]; then
+          cd "$SRC_DIR"
+          GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "initial")
+          REGISTRY="{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}"
+          IMAGE="${REGISTRY}/library/commit-echoer"
+
+          echo "{{ harbor_admin_password | default('admin') }}" | docker login "$REGISTRY" -u admin --password-stdin
+          docker build --build-arg "COMMIT_ID=${GIT_HASH}" -t "${IMAGE}:latest" -t "${IMAGE}:${GIT_HASH}" .
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:${GIT_HASH}"
+        fi
+      changed_when: false
 
 - name: Configure Harbor trust for Jenkins OIDC Workload Identity
   block:

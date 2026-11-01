@@ -4,6 +4,14 @@
 # Bind dynamically to all local interfaces (Tailscale, loopback, Docker bridges, LAN)
 bind-dynamic
 
+# On Debian/Ubuntu, systemd-helper adds '--local-service' by default, which only accepts
+# queries from hosts whose IP matches an interface's local subnet. Because Tailscale
+# assigns a /32 point-to-point subnet to tailscale0, queries from other Tailscale peers
+# are rejected as "non-local network".
+# By dnsmasq design, specifying '--except-interface' disables '--local-service' while
+# retaining dynamic binding across all interfaces.
+except-interface=none
+
 # Never forward plain names without dots
 domain-needed
 # Never forward addresses in non-routed address spaces

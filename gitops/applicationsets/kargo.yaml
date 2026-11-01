@@ -1,0 +1,70 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kargo
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: registry.ratlab.dev:8443/library
+    chart: kargo
+    targetRevision: 1.12.5
+    helm:
+      valuesObject:
+        api:
+          host: kargo.ratlab.dev
+          adminAccount:
+            enabled: true
+            passwordHash: "$2y$10$d86XJfjlicvsXCYixyw65OWVMs4c41j6yGr92lyMQUKA3a8DsVuQy"
+            tokenSigningKey: "ratlabkargotokensecretkey1234567890"
+          service:
+            type: LoadBalancer
+          tls:
+            enabled: false
+            terminatedUpstream: true
+        controller:
+          logLevel: DEBUG
+        webhooks:
+          register: true
+        webhooksServer:
+          enabled: true
+          tls:
+            selfSignedCert: false
+            secretName: kargo-webhooks-server-cert
+            caBundle: |
+              -----BEGIN CERTIFICATE-----
+              MIIDFzCCAf+gAwIBAgIUeUvWgQ22tljXbNav/xCzN5NAMjAwDQYJKoZIhvcNAQEL
+              BQAwGzEZMBcGA1UEAwwQa2FyZ28td2ViaG9vay1jYTAeFw0yNjExMDExMTI5MjBa
+              Fw0zNjEwMjkxMTI5MjBaMBsxGTAXBgNVBAMMEGthcmdvLXdlYmhvb2stY2EwggEi
+              MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDdCfXnjix51vXlNzQ70mYIEM18
+              wZtYro/I07Gbd1a7CJ7P2J2L/VNyTqyAzZH+cWWYaiaz3dFa4TdfRyhGMcKEIPsw
+              x7Y8IA/XR5Osu9yk6GvEPws0Fr9arGRlwZMminQjyTUXRq76F2J3d66e+PW2Vc3f
+              8nkNZ5HIrB+1eEgjtRs4mYolmPHzwk7WNwleOdQh6H7F6cRNslZ0qvNUpYEqBYBI
+              UVhJhHP7YhjBKpTGOAqAqaGjHBkpZUFbzLKbFu1V03oSwsNFxUcuMq2VyKdcKfc5
+              qIw3Q1jxi5NzqM4Qu+UcBA7aCFbMWLnNBJPUDI4rrEFsKxviUkYrWVKbkjePAgMB
+              AAGjUzBRMB0GA1UdDgQWBBRGpyEEsdyFbKLb4wLuQhc4JXbntDAfBgNVHSMEGDAW
+              gBRGpyEEsdyFbKLb4wLuQhc4JXbntDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
+              DQEBCwUAA4IBAQB/XufPn2dp/PQiNXvO7WKpJfDdWXfdHJGz3osS9npeEg8VWNbF
+              dXDlgN216ADBTTi4vRYR/VFxkGTo6yJs4NCLXrYJDlKIm2YbrdxIJxwhkc+iGduk
+              uYTF4Bckj8EsugA/gmyyTNrn/OjD7HdpcoDKX4Y9N1DU41/E1TEADFljYq6ORuG+
+              VM4BE09fgPvS+v3Avpd8O3P+vSCHJec7EyTbNzSJDYCbcIfOn9fXrV114BSSvDzL
+              j1BO3+EK0bYb7DAO+F8T/ExYhpwaLFxnBf89+gTGdtNnrPqMFXKoVbv9wNJF5ff7
+              g/IgANLQtvvYtcVFlwiry/j0RatkwB5WIsMB
+              -----END CERTIFICATE-----
+        externalWebhooksServer:
+          enabled: false
+        global:
+          env:
+            - name: GIT_SSL_NO_VERIFY
+              value: "true"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kargo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -16,10 +16,19 @@ metadata:
     jenkins-agent: kaniko-builder
 spec:
   serviceAccountName: jenkins-agent
+  dnsConfig:
+    options:
+    - name: ndots
+      value: "1"
   containers:
   - name: jnlp
     image: jenkins/inbound-agent:latest
     workingDir: /home/jenkins/agent
+    env:
+    - name: REMOTING_OPTS
+      value: "-noCertificateCheck"
+    - name: GIT_SSL_NO_VERIFY
+      value: "true"
     resourceRequestCpu: 100m
     resourceLimitCpu: 500m
     resourceRequestMemory: 128Mi
@@ -36,6 +45,9 @@ spec:
     resourceLimitMemory: 1024Mi
 """
             }
+        }
+        triggers {
+            pollSCM('* * * * *')
         }
         stages {
             stage('Prepare Workspace & Auth') {
@@ -64,16 +76,23 @@ EOF
                     container('kaniko') {
                         sh """#!/busybox/sh
 set -e
-COMMIT=\${GIT_COMMIT:-manual-\${BUILD_NUMBER}}
-SHORT_COMMIT=\$(echo "\${COMMIT}" | /busybox/cut -c1-8)
-echo "Building scratch image for ${appName} with commit: \${SHORT_COMMIT}"
+COMMIT_FULL=\${GIT_COMMIT:-manual-\${BUILD_NUMBER}}
+COMMIT_SHA=\$(echo "\${COMMIT_FULL}" | /busybox/cut -c1-7)
+echo "Building scratch image for ${appName} with commit SHA: \${COMMIT_SHA} (\${COMMIT_FULL})"
+
+DESTINATIONS="--destination=${registryHost}/${imageRepo}:\${COMMIT_SHA}"
+if [ "\${COMMIT_FULL}" != "\${COMMIT_SHA}" ]; then
+  DESTINATIONS="\${DESTINATIONS} --destination=${registryHost}/${imageRepo}:\${COMMIT_FULL}"
+fi
+DESTINATIONS="\${DESTINATIONS} --destination=${registryHost}/${imageRepo}:latest"
 
 /kaniko/executor \\
   --context=dir://\${WORKSPACE} \\
   --dockerfile=\${WORKSPACE}/Dockerfile \\
-  --destination=${registryHost}/${imageRepo}:\${SHORT_COMMIT} \\
-  --destination=${registryHost}/${imageRepo}:latest \\
-  --build-arg=COMMIT_ID=\${SHORT_COMMIT} \\
+  \${DESTINATIONS} \\
+  --build-arg=COMMIT_ID=\${COMMIT_SHA} \\
+  --ignore-path=/product_uuid \\
+  --ignore-path=/product_name \\
   --skip-tls-verify
 """
                     }

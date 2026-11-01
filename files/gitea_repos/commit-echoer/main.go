@@ -15,7 +15,7 @@ func main() {
 		commit = CommitID
 	}
 
-	fmt.Printf("Starting commit-echoer service (Commit ID: %s)\n", commit)
+	fmt.Printf("Starting commit-echoer service (Commit ID: %s) [CI/CD Verified]\n", commit)
 	for {
 		fmt.Printf("[%s] Commit ID: %s\n", time.Now().UTC().Format(time.RFC3339), commit)
 		time.Sleep(5 * time.Second)

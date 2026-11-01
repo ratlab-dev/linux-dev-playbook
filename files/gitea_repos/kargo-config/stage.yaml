@@ -1,0 +1,67 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: live
+  namespace: commit-echoer
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: commit-echoer
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        # Step 1: Clone GitOps configuration repository
+        - uses: git-clone
+          config:
+            repoURL: https://git.ratlab.dev/admin/gitops.git
+            insecureSkipTLSVerify: true
+            checkout:
+              - branch: main
+                path: ./src
+
+        # Step 2: Update container image tag and sidecar image in images.yaml if new image freight exists
+        - as: update-image
+          uses: yaml-update
+          if: '${{ imageFrom("registry.ratlab.dev:8443/library/commit-echoer") != nil }}'
+          config:
+            path: ./src/apps/commit-echoer/images.yaml
+            updates:
+              - key: image.tag
+                value: '${{ imageFrom("registry.ratlab.dev:8443/library/commit-echoer").Tag }}'
+              - key: sidecars.0.image
+                value: '${{ "registry.ratlab.dev:8443/library/commit-echoer:" + imageFrom("registry.ratlab.dev:8443/library/commit-echoer").Tag }}'
+
+        # Step 3: Update Helm chart targetRevision in commit-echoer application if new chart freight exists
+        - as: update-chart
+          uses: yaml-update
+          if: '${{ chartFrom("oci://registry.ratlab.dev:8443/library/generic-app") != nil }}'
+          config:
+            path: ./src/applicationsets/commit-echoer.yaml
+            updates:
+              - key: spec.sources.0.targetRevision
+                value: '${{ chartFrom("oci://registry.ratlab.dev:8443/library/generic-app").Version }}'
+
+        # Step 4: Commit updated configuration to Git
+        - uses: git-commit
+          as: commit
+          config:
+            path: ./src
+            message: "chore(kargo): promote commit-echoer freight"
+
+        # Step 5: Push committed changes to GitOps main branch
+        - uses: git-push
+          config:
+            path: ./src
+            targetBranch: main
+
+        # Step 6: Notify Argo CD application to sync newly promoted revision
+        - uses: argocd-update
+          config:
+            apps:
+              - name: commit-echoer
+                sources:
+                  - repoURL: https://git.ratlab.dev:3000/admin/gitops.git
+                    desiredRevision: '${{ outputs.commit.commit }}'

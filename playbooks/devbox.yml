@@ -105,5 +105,9 @@
       tags: [argocd]
       when: argocd_enable | default(true) | bool
 
+    - role: kargo
+      tags: [kargo]
+      when: kargo_enable | default(true) | bool
+
     - role: verify
       tags: [verify]

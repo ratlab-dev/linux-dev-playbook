@@ -42,7 +42,6 @@ case "${ACTION}" in
             > "${FILE}"
             [[ -n "${TS_IP}" ]] && echo "${TS_IP} ${DOMAIN}" >> "${FILE}"
             [[ -n "${LAN_IP}" && "${LAN_IP}" != "${TS_IP}" ]] && echo "${LAN_IP} ${DOMAIN}" >> "${FILE}"
-            echo "127.0.0.1 ${DOMAIN}" >> "${FILE}"
             echo "[OK] Registered multi-interface DNS records for ${DOMAIN} (written to ${FILE})"
         fi
         ;;

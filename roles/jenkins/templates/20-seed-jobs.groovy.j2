@@ -41,13 +41,13 @@ def createOrUpdatePipeline(String jobName, String repoUrl, String jenkinsfilePat
 try {
     createOrUpdatePipeline(
         "commit-echoer",
-        "https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/commit-echoer.git",
+        "https://git.{{ internal_domain | default('ratlab.dev') }}/admin/commit-echoer.git",
         "Jenkinsfile"
     )
 
     createOrUpdatePipeline(
         "app-helm-charts-publisher",
-        "https://git.{{ internal_domain | default('ratlab.dev') }}:{{ gitea_http_port | default(3000) }}/admin/app-helm-charts.git",
+        "https://git.{{ internal_domain | default('ratlab.dev') }}/admin/app-helm-charts.git",
         "Jenkinsfile"
     )
 } catch (Exception e) {

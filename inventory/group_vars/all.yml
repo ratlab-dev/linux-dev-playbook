@@ -204,3 +204,16 @@ argocd_admin_password: "admin"
 argocd_admin_bcrypt: "$2y$10$d86XJfjlicvsXCYixyw65OWVMs4c41j6yGr92lyMQUKA3a8DsVuQy"
 argocd_gitops_repo_name: "gitops"
 argocd_service_type: "LoadBalancer"
+
+# ==============================================================================
+# Kargo Promotion Engine Configuration
+# ==============================================================================
+kargo_enable: true
+kargo_namespace: "kargo"
+kargo_domain: "kargo.ratlab.dev"
+kargo_chart_version: "1.12.5"
+kargo_admin_password: "admin"
+kargo_admin_bcrypt: "$2y$10$d86XJfjlicvsXCYixyw65OWVMs4c41j6yGr92lyMQUKA3a8DsVuQy"
+kargo_token_signing_key: "ratlabkargotokensecretkey1234567890"
+kargo_gitops_repo_name: "kargo-config"
+kargo_service_type: "LoadBalancer"

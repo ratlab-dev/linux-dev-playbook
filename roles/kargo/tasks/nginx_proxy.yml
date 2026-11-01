@@ -1,0 +1,62 @@
+---
+# Tasks for configuring Nginx reverse proxy and DNS entry for Kargo
+
+- name: Identify management cluster for Kargo
+  ansible.builtin.set_fact:
+    mgmt_cluster: "{{ (kind_clusters | selectattr('is_management_cluster', 'defined') | selectattr('is_management_cluster', 'equalto', true) | first) | default(kind_clusters[0]) }}"
+  when: mgmt_cluster is not defined
+
+- name: Set management cluster kubeconfig
+  ansible.builtin.set_fact:
+    kargo_kubeconfig: "/root/.kube/{{ mgmt_cluster.name }}.kubeconfig"
+  when: kargo_kubeconfig is not defined
+
+- name: Wait for Kargo API service to obtain LoadBalancer IP
+  ansible.builtin.shell: |
+    {{ kind_install_dir | default('/usr/local/bin') }}/kubectl --kubeconfig {{ kargo_kubeconfig }} \
+      get svc kargo-api -n {{ kargo_namespace | default('kargo') }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+  register: queried_kargo_ip
+  until: queried_kargo_ip.stdout | trim | length > 0
+  retries: 30
+  delay: 3
+  changed_when: false
+
+- name: Set kargo_service_ip fact from query
+  ansible.builtin.set_fact:
+    kargo_service_ip: "{{ queried_kargo_ip.stdout | trim }}"
+
+- name: Deploy Nginx reverse proxy configuration for Kargo
+  ansible.builtin.template:
+    src: kargo.nginx.conf.j2
+    dest: /etc/nginx/sites-available/kargo.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload nginx
+
+- name: Enable Kargo site in Nginx
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/kargo.conf
+    dest: /etc/nginx/sites-enabled/kargo.conf
+    state: link
+  notify: Reload nginx
+
+- name: Register Kargo hostname in dynamic dnsmasq hosts
+  ansible.builtin.copy:
+    dest: /etc/dnsmasq.hosts.d/kargo.hosts
+    content: |
+      {% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
+      {{ tailscale_node_ip }} {{ kargo_domain }}
+      {% endif %}
+      {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
+      {{ ansible_default_ipv4.address }} {{ kargo_domain }}
+      {% endif %}
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Ensure Kargo domain is resolved locally in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{ kargo_domain }}"
+    state: present

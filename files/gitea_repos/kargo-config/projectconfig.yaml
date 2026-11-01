@@ -1,0 +1,10 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  name: commit-echoer
+  namespace: commit-echoer
+spec:
+  promotionPolicies:
+    - stageSelector:
+        name: live
+      autoPromotionEnabled: true

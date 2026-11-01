@@ -11,10 +11,19 @@ metadata:
     jenkins-agent: helm-publisher
 spec:
   serviceAccountName: jenkins-agent
+  dnsConfig:
+    options:
+    - name: ndots
+      value: "1"
   containers:
   - name: jnlp
     image: jenkins/inbound-agent:latest
     workingDir: /home/jenkins/agent
+    env:
+    - name: REMOTING_OPTS
+      value: "-noCertificateCheck"
+    - name: GIT_SSL_NO_VERIFY
+      value: "true"
   - name: helm
     image: alpine/helm:3.16.4
     command:
@@ -30,20 +39,20 @@ spec:
         stage('Package & Push Chart to Harbor') {
             steps {
                 container('helm') {
-                    sh """#!/bin/sh
+                    sh '''#!/bin/sh
 set -e
 echo "Packaging generic-app Helm chart..."
-cd \${WORKSPACE}/generic-app
+cd ${WORKSPACE}/generic-app
 helm package .
 
 echo "Logging into Harbor OCI registry..."
 echo "admin" | helm registry login registry.ratlab.dev:8443 --username admin --password-stdin --insecure
 
 echo "Pushing generic-app chart to Harbor OCI..."
-CHART_PACKAGE=\$(ls generic-app-*.tgz | head -n 1)
-helm push "\${CHART_PACKAGE}" oci://registry.ratlab.dev:8443/library
+CHART_PACKAGE=$(ls generic-app-*.tgz | head -n 1)
+helm push "${CHART_PACKAGE}" oci://registry.ratlab.dev:8443/library --insecure-skip-tls-verify
 echo "Chart successfully published to Harbor."
-"""
+'''
                 }
             }
         }

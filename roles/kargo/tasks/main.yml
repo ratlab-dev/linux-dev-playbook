@@ -1,0 +1,28 @@
+---
+# Main entrypoint for role: kargo
+
+- name: Determine Tailscale IP if not already set
+  block:
+    - name: Query tailscale IP
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Set tailscale_node_ip fact
+      ansible.builtin.set_fact:
+        tailscale_node_ip: "{{ tailscale_ip_cmd.stdout | trim if (tailscale_ip_cmd.rc is defined and tailscale_ip_cmd.rc == 0) else (ansible_host | default(ansible_default_ipv4.address)) }}"
+  when: tailscale_node_ip is not defined
+  tags: [always]
+
+- name: Publish Kargo Helm chart to Harbor OCI registry
+  ansible.builtin.import_tasks: chart.yml
+  tags: [kargo, kargo_chart]
+
+- name: Deploy Kargo shared credentials
+  ansible.builtin.import_tasks: credentials.yml
+  tags: [kargo, kargo_creds]
+
+- name: Configure Nginx reverse proxy and DNS for Kargo UI
+  ansible.builtin.import_tasks: nginx_proxy.yml
+  tags: [kargo, kargo_proxy]

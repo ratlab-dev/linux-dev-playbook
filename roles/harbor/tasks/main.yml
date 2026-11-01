@@ -164,7 +164,6 @@
       {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
       {{ ansible_default_ipv4.address }} {{ harbor_domain | default('harbor.' ~ internal_domain) }} registry.{{ internal_domain }}
       {% endif %}
-      127.0.0.1 {{ harbor_domain | default('harbor.' ~ internal_domain) }} registry.{{ internal_domain }}
     owner: root
     group: root
     mode: '0644'
@@ -320,13 +319,15 @@
         if [ -d "$SRC_DIR" ]; then
           cd "$SRC_DIR"
           GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "initial")
+          GIT_FULL=$(git rev-parse HEAD 2>/dev/null || echo "initial")
           REGISTRY="{{ harbor_domain | default('registry.' ~ internal_domain) }}:{{ (ratlab_ports | default({})).nginx_https_alt | default(8443) }}"
           IMAGE="${REGISTRY}/library/commit-echoer"
 
           echo "{{ harbor_admin_password | default('admin') }}" | docker login "$REGISTRY" -u admin --password-stdin
-          docker build --build-arg "COMMIT_ID=${GIT_HASH}" -t "${IMAGE}:latest" -t "${IMAGE}:${GIT_HASH}" .
+          docker build --build-arg "COMMIT_ID=${GIT_HASH}" -t "${IMAGE}:latest" -t "${IMAGE}:${GIT_HASH}" -t "${IMAGE}:${GIT_FULL}" .
           docker push "${IMAGE}:latest"
           docker push "${IMAGE}:${GIT_HASH}"
+          docker push "${IMAGE}:${GIT_FULL}"
         fi
       changed_when: false
 

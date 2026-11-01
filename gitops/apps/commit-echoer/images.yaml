@@ -1,10 +1,10 @@
 # Image configuration for commit-echoer (takes precedence over values.yaml)
 image:
   repository: "registry.ratlab.dev:8443/library/commit-echoer"
-  tag: "latest"
-  pullPolicy: Always
+  tag: "0efef19"
+  pullPolicy: IfNotPresent
 
 sidecars:
   - name: echo-monitor
-    image: "registry.ratlab.dev:8443/library/commit-echoer:latest"
-    imagePullPolicy: Always
+    image: "registry.ratlab.dev:8443/library/commit-echoer:0efef19"
+    imagePullPolicy: IfNotPresent

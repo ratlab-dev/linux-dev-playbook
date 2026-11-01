@@ -65,7 +65,6 @@
       {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
       {{ ansible_default_ipv4.address }} {{ openbao_domain }}
       {% endif %}
-      127.0.0.1 {{ openbao_domain }}
     owner: root
     group: root
     mode: '0644'

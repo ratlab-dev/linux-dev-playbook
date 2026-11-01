@@ -103,7 +103,6 @@
       {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
       {{ ansible_default_ipv4.address }} {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
       {% endif %}
-      127.0.0.1 {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
     owner: root
     group: root
     mode: '0644'
@@ -119,7 +118,6 @@
       {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
       {{ ansible_default_ipv4.address }} {{ name }}.{{ dns_domain }}
       {% endif %}
-      127.0.0.1 {{ name }}.{{ dns_domain }}
       {% endfor %}
     owner: root
     group: root

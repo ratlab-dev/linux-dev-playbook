@@ -9,6 +9,7 @@ jenkins:
         serverUrl: "https://{{ current_cluster.domain }}"
         jenkinsUrl: "https://{{ jenkins_domain | default('jenkins.' ~ internal_domain) }}"
         namespace: "{{ jenkins_agent_namespace | default('jenkins-agents') }}"
+        credentialsId: "k8s-{{ current_cluster.name }}-token"
         webSocket: true
         directConnection: false
         skipTlsVerify: true
@@ -35,3 +36,13 @@ jenkins:
                 ttyEnabled: true
                 alwaysPullImage: false
                 workingDir: "/home/jenkins/agent"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              id: "k8s-{{ current_cluster.name }}-token"
+              scope: "GLOBAL"
+              secret: "{{ generated_cluster_admin_token.stdout | trim }}"
+              description: "Kubernetes Admin Token for {{ current_cluster.name }}"

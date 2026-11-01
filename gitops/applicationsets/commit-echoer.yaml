@@ -5,6 +5,7 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    kargo.akuity.io/authorized-stage: "commit-echoer:live"
 spec:
   project: default
   sources:

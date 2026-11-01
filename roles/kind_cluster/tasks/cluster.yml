@@ -242,7 +242,6 @@
           {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
           {{ ansible_default_ipv4.address }} {{ dom }}
           {% endif %}
-          127.0.0.1 {{ dom }}
           {% endfor %}
         owner: root
         group: root

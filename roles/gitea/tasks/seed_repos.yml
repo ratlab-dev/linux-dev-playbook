@@ -14,6 +14,7 @@
     - "commit-echoer"
     - "jenkins-shared-library"
     - "app-helm-charts"
+    - "kargo-config"
   register: gitea_repo_creation
   changed_when: false
 
@@ -28,6 +29,7 @@
     - "commit-echoer"
     - "jenkins-shared-library"
     - "app-helm-charts"
+    - "kargo-config"
 
 - name: Copy repository contents to staging directories
   ansible.builtin.copy:
@@ -40,6 +42,7 @@
     - "commit-echoer"
     - "jenkins-shared-library"
     - "app-helm-charts"
+    - "kargo-config"
 
 - name: Initialize Git repositories and push to Gitea
   ansible.builtin.shell: |
@@ -64,5 +67,31 @@
     - "commit-echoer"
     - "jenkins-shared-library"
     - "app-helm-charts"
+    - "kargo-config"
   register: gitea_push_result
   changed_when: "'Branch' in gitea_push_result.stderr or 'To ' in gitea_push_result.stderr"
+
+- name: Ensure Gitea repository hooks directories exist
+  ansible.builtin.file:
+    path: "/var/lib/gitea/repositories/admin/{{ item.repo }}.git/hooks/post-receive.d"
+    state: directory
+    owner: git
+    group: git
+    mode: '0755'
+  loop:
+    - { repo: "commit-echoer", job: "commit-echoer" }
+    - { repo: "app-helm-charts", job: "app-helm-charts-publisher" }
+
+- name: Deploy post-receive trigger hooks for Jenkins pipelines
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      java -jar /usr/local/bin/jenkins-cli.jar -s https://{{ jenkins_domain | default('jenkins.' ~ (internal_domain | default('ratlab.dev'))) }}/ -noCertificateCheck -auth admin:admin build {{ item.job }}
+    dest: "/var/lib/gitea/repositories/admin/{{ item.repo }}.git/hooks/post-receive.d/jenkins-trigger"
+    owner: git
+    group: git
+    mode: '0755'
+  loop:
+    - { repo: "commit-echoer", job: "commit-echoer" }
+    - { repo: "app-helm-charts", job: "app-helm-charts-publisher" }
+

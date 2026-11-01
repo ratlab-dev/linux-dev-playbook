@@ -1,0 +1,11 @@
+---
+# Defaults for role: kargo
+kargo_enable: true
+kargo_namespace: "kargo"
+kargo_domain: "kargo.{{ internal_domain | default('ratlab.dev') }}"
+kargo_chart_version: "1.12.5"
+kargo_admin_password: "admin"
+kargo_admin_bcrypt: "$2y$10$d86XJfjlicvsXCYixyw65OWVMs4c41j6yGr92lyMQUKA3a8DsVuQy"
+kargo_token_signing_key: "ratlabkargotokensecretkey1234567890"
+kargo_service_type: "LoadBalancer"
+kind_install_dir: "/usr/local/bin"

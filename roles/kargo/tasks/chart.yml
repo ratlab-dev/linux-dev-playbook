@@ -1,0 +1,18 @@
+---
+# Tasks for publishing Kargo Helm chart to Harbor OCI registry
+
+- name: Ensure Kargo chart upload script is available on devbox
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/upload-kargo-chart-to-harbor.sh"
+    dest: /usr/local/bin/upload-kargo-chart-to-harbor
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Ensure official Kargo chart is published to Harbor OCI registry
+  ansible.builtin.shell: |
+    /usr/local/bin/upload-kargo-chart-to-harbor {{ kargo_chart_version | default('1.12.5') }}
+  environment:
+    PATH: "{{ kind_install_dir | default('/usr/local/bin') }}:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
+  register: kargo_harbor_push
+  changed_when: "'Successfully published' in kargo_harbor_push.stdout"

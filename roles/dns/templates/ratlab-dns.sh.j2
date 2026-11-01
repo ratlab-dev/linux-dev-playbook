@@ -26,15 +26,25 @@ ACTION="${1:-list}"
 case "${ACTION}" in
     add)
         DOMAIN="${2:-}"
-        IP="${3:-${DEFAULT_IP}}"
-        if [[ -z "${DOMAIN}" || -z "${IP}" ]]; then
+        IP="${3:-}"
+        if [[ -z "${DOMAIN}" ]]; then
             echo "[ERROR] Usage: ratlab-dns add <domain> [ip]"
             exit 1
         fi
         SLUG=$(echo "${DOMAIN}" | tr -c 'a-zA-Z0-9._-' '_')
         FILE="${HOSTS_DIR}/${SLUG}.hosts"
-        echo "${IP} ${DOMAIN}" > "${FILE}"
-        echo "[OK] Registered DNS record: ${DOMAIN} -> ${IP} (written to ${FILE})"
+        if [[ -n "${IP}" ]]; then
+            echo "${IP} ${DOMAIN}" > "${FILE}"
+            echo "[OK] Registered DNS record: ${DOMAIN} -> ${IP} (written to ${FILE})"
+        else
+            TS_IP="$(tailscale ip -4 2>/dev/null || echo "{{ tailscale_node_ip | default('') }}")"
+            LAN_IP="$(ip -4 addr show scope global | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || echo "{{ ansible_default_ipv4.address | default('') }}")"
+            > "${FILE}"
+            [[ -n "${TS_IP}" ]] && echo "${TS_IP} ${DOMAIN}" >> "${FILE}"
+            [[ -n "${LAN_IP}" && "${LAN_IP}" != "${TS_IP}" ]] && echo "${LAN_IP} ${DOMAIN}" >> "${FILE}"
+            echo "127.0.0.1 ${DOMAIN}" >> "${FILE}"
+            echo "[OK] Registered multi-interface DNS records for ${DOMAIN} (written to ${FILE})"
+        fi
         ;;
 
     remove|del)

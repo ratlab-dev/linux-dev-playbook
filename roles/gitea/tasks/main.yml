@@ -149,7 +149,14 @@
 - name: Register Gitea DNS entry in ratlab dynamic DNS
   ansible.builtin.copy:
     dest: /etc/dnsmasq.hosts.d/gitea.hosts
-    content: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ gitea_domain | default('git.' ~ internal_domain) }}\n"
+    content: |
+      {% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
+      {{ tailscale_node_ip }} {{ gitea_domain | default('git.' ~ internal_domain) }}
+      {% endif %}
+      {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
+      {{ ansible_default_ipv4.address }} {{ gitea_domain | default('git.' ~ internal_domain) }}
+      {% endif %}
+      127.0.0.1 {{ gitea_domain | default('git.' ~ internal_domain) }}
     owner: root
     group: root
     mode: '0644'

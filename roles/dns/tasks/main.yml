@@ -97,7 +97,13 @@
   ansible.builtin.copy:
     dest: "{{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}/00-baseline.hosts"
     content: |
-      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
+      {% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
+      {{ tailscale_node_ip }} {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
+      {% endif %}
+      {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
+      {{ ansible_default_ipv4.address }} {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
+      {% endif %}
+      127.0.0.1 {{ baseline_hostname if '.' in baseline_hostname else (baseline_hostname ~ '.' ~ dns_domain) }} {{ baseline_hostname.split('.')[0] }}
     owner: root
     group: root
     mode: '0644'
@@ -106,10 +112,15 @@
   ansible.builtin.copy:
     dest: "{{ dns_hosts_dir | default('/etc/dnsmasq.hosts.d') }}/10-services.hosts"
     content: |
-      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} vault.{{ dns_domain }}
-      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} git.{{ dns_domain }}
-      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} registry.{{ dns_domain }}
-      {{ tailscale_node_ip | default(ansible_default_ipv4.address) }} harbor.{{ dns_domain }}
+      {% for name in ['vault', 'git', 'registry', 'harbor'] %}
+      {% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
+      {{ tailscale_node_ip }} {{ name }}.{{ dns_domain }}
+      {% endif %}
+      {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
+      {{ ansible_default_ipv4.address }} {{ name }}.{{ dns_domain }}
+      {% endif %}
+      127.0.0.1 {{ name }}.{{ dns_domain }}
+      {% endfor %}
     owner: root
     group: root
     mode: '0644'

@@ -12,6 +12,11 @@ bind-dynamic
 # retaining dynamic binding across all interfaces.
 except-interface=none
 
+# Return answers based on the interface over which the query was received.
+# If a hostname has addresses on multiple subnets (e.g. Tailscale, Wi-Fi/LAN, localhost),
+# dnsmasq returns the IP matching the subnet of the query's incoming interface.
+localise-queries
+
 # Never forward plain names without dots
 domain-needed
 # Never forward addresses in non-routed address spaces
@@ -30,8 +35,11 @@ no-resolv
 server={{ server }}
 {% endfor %}
 
-# Wildcard root domain mapping: *.{{ dns_domain }} -> {{ tailscale_node_ip | default(ansible_default_ipv4.address) }}
+# Wildcard root domain mapping: *.{{ dns_domain }}
 address=/{{ dns_domain }}/{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}
+{% if tailscale_node_ip is defined and ansible_default_ipv4.address is defined and tailscale_node_ip != ansible_default_ipv4.address %}
+address=/{{ dns_domain }}/{{ ansible_default_ipv4.address }}
+{% endif %}
 
 # Explicit and custom hostname records
 {% for record in dns_custom_records %}

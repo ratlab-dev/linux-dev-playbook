@@ -26,6 +26,15 @@ spec:
             terminatedUpstream: true
         controller:
           logLevel: DEBUG
+          volumes:
+            - name: ca-bundle
+              configMap:
+                name: ratlab-ca-bundle
+          volumeMounts:
+            - name: ca-bundle
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-certificates.crt
+              readOnly: true
         webhooks:
           register: true
         webhooksServer:
@@ -57,8 +66,8 @@ spec:
           enabled: false
         global:
           env:
-            - name: GIT_SSL_NO_VERIFY
-              value: "true"
+            - name: SSL_CERT_FILE
+              value: /etc/ssl/certs/ca-certificates.crt
   destination:
     server: https://kubernetes.default.svc
     namespace: kargo

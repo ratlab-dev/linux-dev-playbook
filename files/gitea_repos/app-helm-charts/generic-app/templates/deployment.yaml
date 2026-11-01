@@ -24,13 +24,24 @@ spec:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
-          {{- with .Values.env }}
           env:
+            {{- if .Values.trustBundle.enabled }}
+            - name: SSL_CERT_FILE
+              value: {{ .Values.trustBundle.mountPath }}
+            {{- end }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.trustBundle.enabled }}
+          volumeMounts:
+            - name: ca-bundle
+              mountPath: {{ .Values.trustBundle.mountPath }}
+              subPath: {{ .Values.trustBundle.subPath }}
+              readOnly: true
           {{- end }}
         {{- with .Values.sidecars }}
         {{- range . }}
@@ -49,14 +60,31 @@ spec:
           args:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .env }}
           env:
+            {{- if $.Values.trustBundle.enabled }}
+            - name: SSL_CERT_FILE
+              value: {{ $.Values.trustBundle.mountPath }}
+            {{- end }}
+            {{- with .env }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           {{- with .resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if $.Values.trustBundle.enabled }}
+          volumeMounts:
+            - name: ca-bundle
+              mountPath: {{ $.Values.trustBundle.mountPath }}
+              subPath: {{ $.Values.trustBundle.subPath }}
+              readOnly: true
+          {{- end }}
         {{- end }}
         {{- end }}
+      {{- if .Values.trustBundle.enabled }}
+      volumes:
+        - name: ca-bundle
+          configMap:
+            name: {{ .Values.trustBundle.configMapName }}
+      {{- end }}
 {{- end }}

@@ -17,7 +17,6 @@ spec:
         - uses: git-clone
           config:
             repoURL: https://git.ratlab.dev/admin/gitops.git
-            insecureSkipTLSVerify: true
             checkout:
               - branch: main
                 path: ./src

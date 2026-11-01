@@ -20,15 +20,24 @@ spec:
     options:
     - name: ndots
       value: "1"
+  volumes:
+  - name: ca-bundle
+    configMap:
+      name: ratlab-ca-bundle
   containers:
   - name: jnlp
     image: jenkins/inbound-agent:latest
     workingDir: /home/jenkins/agent
     env:
-    - name: REMOTING_OPTS
-      value: "-noCertificateCheck"
-    - name: GIT_SSL_NO_VERIFY
-      value: "true"
+    - name: JAVA_TOOL_OPTIONS
+      value: "-Djavax.net.ssl.trustStore=/etc/ssl/certs/bundle.jks -Djavax.net.ssl.trustStorePassword=changeit"
+    volumeMounts:
+    - name: ca-bundle
+      mountPath: /etc/ssl/certs/ca-certificates.crt
+      subPath: ca-certificates.crt
+    - name: ca-bundle
+      mountPath: /etc/ssl/certs/bundle.jks
+      subPath: bundle.jks
     resourceRequestCpu: 100m
     resourceLimitCpu: 500m
     resourceRequestMemory: 128Mi
@@ -39,6 +48,13 @@ spec:
     - /busybox/cat
     tty: true
     workingDir: /home/jenkins/agent
+    volumeMounts:
+    - name: ca-bundle
+      mountPath: /kaniko/ssl/certs/ca-certificates.crt
+      subPath: ca-certificates.crt
+    - name: ca-bundle
+      mountPath: /etc/ssl/certs/ca-certificates.crt
+      subPath: ca-certificates.crt
     resourceRequestCpu: 200m
     resourceLimitCpu: 1000m
     resourceRequestMemory: 256Mi
@@ -92,8 +108,7 @@ DESTINATIONS="\${DESTINATIONS} --destination=${registryHost}/${imageRepo}:latest
   \${DESTINATIONS} \\
   --build-arg=COMMIT_ID=\${COMMIT_SHA} \\
   --ignore-path=/product_uuid \\
-  --ignore-path=/product_name \\
-  --skip-tls-verify
+  --ignore-path=/product_name
 """
                     }
                 }

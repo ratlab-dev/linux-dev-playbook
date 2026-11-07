@@ -145,6 +145,7 @@
   ansible.builtin.set_fact:
     vault_tls_needs_signing: >-
       {{
+        not (certbot_enable | default(false) | bool) and
         not (
           (local_signed_openbao_cert.stat.exists or target_signed_openbao_cert.stat.exists) and
           (openbao_cert_checkend.rc | default(1) == 0) and
@@ -218,7 +219,7 @@
       changed_when: true
   when: vault_tls_needs_signing | bool
 
-- name: Deploy signed OpenBao certificate to devbox
+- name: Deploy signed OpenBao certificate to devbox (Internal PKI)
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../files/certs/openbao.crt"
     dest: "{{ openbao_tls_dir }}/vault.crt"
@@ -226,6 +227,31 @@
     group: "{{ openbao_group }}"
     mode: '0644'
   notify: Reload nginx
+  when: not (certbot_enable | default(false) | bool)
+
+- name: Deploy Let's Encrypt certificate to OpenBao TLS when certbot enabled
+  block:
+    - name: Copy Let's Encrypt wildcard certificate for OpenBao
+      ansible.builtin.copy:
+        src: /etc/ssl/certs/ratlab_wildcard.crt
+        dest: "{{ openbao_tls_dir }}/vault.crt"
+        remote_src: true
+        owner: "{{ openbao_user }}"
+        group: "{{ openbao_group }}"
+        mode: '0644'
+
+    - name: Copy Let's Encrypt wildcard key for OpenBao
+      ansible.builtin.copy:
+        src: /etc/ssl/private/ratlab_wildcard.key
+        dest: "{{ openbao_tls_dir }}/vault.key"
+        remote_src: true
+        owner: "{{ openbao_user }}"
+        group: "{{ openbao_group }}"
+        mode: '0600'
+  when: certbot_enable | default(false) | bool
+  notify:
+    - Restart openbao
+    - Reload nginx
 
 - name: Deploy OpenBao configuration file (openbao.hcl)
   ansible.builtin.template:

@@ -91,6 +91,14 @@ dns_custom_records:
     ip: "{{ tailscale_node_ip | default(ansible_default_ipv4.address) }}"
 
 # ==============================================================================
+# Let's Encrypt & Certbot Wildcard TLS Configuration
+# ==============================================================================
+certbot_enable: false                     # Set to true to issue and manage wildcard certs via Let's Encrypt
+certbot_admin_email: "admin@ratlab.dev"
+certbot_dns_propagation_seconds: 30
+certbot_staging: false                    # Set to true for Let's Encrypt staging environment (testing rate limits)
+
+# ==============================================================================
 # Docker Configuration
 # ==============================================================================
 docker_enable: true

@@ -8,6 +8,7 @@ files/vault_credentials.json
 files/vault_init.json
 files/*_credentials*
 files/*_init.json
+*cloudflare*.ini
 *.key
 *.csr
 files/certs/openbao.crt

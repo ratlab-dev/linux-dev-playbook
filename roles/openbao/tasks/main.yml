@@ -21,6 +21,27 @@
   ansible.builtin.import_tasks: pki.yml
   tags: [openbao, openbao_pki]
 
+- name: Backup Let's Encrypt wildcard certificate to Vault KV store if present
+  ansible.builtin.shell: |
+    set -e
+    if [ -f /etc/ssl/certs/ratlab_wildcard.crt ] && [ -f /etc/ssl/private/ratlab_wildcard.key ]; then
+      export VAULT_ADDR="http://127.0.0.1:{{ openbao_port | default(8200) }}"
+      export VAULT_TOKEN="{{ openbao_init_data.root_token }}"
+      if ! {{ openbao_install_dir }}/bao secrets list -format=json 2>/dev/null | jq -e '."secret/"' >/dev/null 2>&1; then
+        {{ openbao_install_dir }}/bao secrets enable -path=secret kv-v2 >/dev/null 2>&1 || true
+      fi
+      {{ openbao_install_dir }}/bao kv put secret/certs/ratlab_wildcard \
+        certificate=@/etc/ssl/certs/ratlab_wildcard.crt \
+        private_key=@/etc/ssl/private/ratlab_wildcard.key
+    fi
+  when:
+    - certbot_enable | default(false) | bool
+    - openbao_init_data is defined
+    - openbao_init_data.root_token is defined
+  failed_when: false
+  changed_when: false
+  tags: [openbao, certbot, vault]
+
 - name: Configure Nginx reverse proxy on port 443 with TLS
   ansible.builtin.import_tasks: nginx.yml
   tags: [openbao, openbao_nginx]

@@ -96,7 +96,9 @@
       ansible.builtin.command: "{{ playbook_dir }}/../scripts/fetch_root_ca_from_yubikey.sh {{ playbook_dir }}/../files/certs/ratlab-root-ca.crt"
       delegate_to: localhost
       become: false
-      when: not (lookup('file', playbook_dir ~ '/../files/certs/ratlab-root-ca.crt', errors='ignore') | length > 0)
+      when:
+        - not (certbot_enable | default(false) | bool)
+        - not (lookup('file', playbook_dir ~ '/../files/certs/ratlab-root-ca.crt', errors='ignore') | length > 0)
       changed_when: true
 
     - name: Ensure ratlab-root-ca exists on devbox

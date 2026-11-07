@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Managed by Ansible (roles/certbot)
+# Executed automatically by Certbot upon successful certificate issuance and renewal
+set -euo pipefail
+
+CERT_DIR="/etc/letsencrypt/live/{{ certbot_domain }}"
+
+# Ensure central SSL directories exist
+mkdir -p /etc/ssl/certs /etc/ssl/private
+
+if [ -f "$CERT_DIR/fullchain.pem" ] && [ -f "$CERT_DIR/privkey.pem" ]; then
+    ln -sf "$CERT_DIR/fullchain.pem" "{{ certbot_central_cert_path }}"
+    ln -sf "$CERT_DIR/privkey.pem" "{{ certbot_central_key_path }}"
+    chmod 0644 "{{ certbot_central_cert_path }}"
+    chmod 0640 "{{ certbot_central_key_path }}"
+    echo "[certbot-hook] Updated central certificate symlinks at {{ certbot_central_cert_path }}"
+fi
+
+# Reload NGINX if installed and running
+if command -v nginx >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx
+        echo "[certbot-hook] Nginx reloaded successfully."
+    else
+        echo "[certbot-hook] WARNING: Nginx configuration test failed; reload skipped." >&2
+    fi
+fi
+
+# Sync renewed certificate to OpenBao Vault if active
+if command -v bao >/dev/null 2>&1 && [ -f /root/.openbao_init.json ]; then
+    ROOT_TOKEN=$(jq -r '.root_token' /root/.openbao_init.json 2>/dev/null || true)
+    if [ -n "$ROOT_TOKEN" ] && [ "$ROOT_TOKEN" != "null" ]; then
+        export VAULT_ADDR="http://127.0.0.1:{{ openbao_port | default(8200) }}"
+        export VAULT_TOKEN="$ROOT_TOKEN"
+        if ! bao secrets list -format=json 2>/dev/null | jq -e '."secret/"' >/dev/null 2>&1; then
+            bao secrets enable -path=secret kv-v2 >/dev/null 2>&1 || true
+        fi
+        bao kv put secret/certs/ratlab_wildcard \
+            certificate=@"{{ certbot_central_cert_path }}" \
+            private_key=@"{{ certbot_central_key_path }}" >/dev/null 2>&1 || true
+        echo "[certbot-hook] Synced renewed certificate into OpenBao Vault (secret/certs/ratlab_wildcard)."
+    fi
+fi

@@ -42,6 +42,28 @@
         group: root
         mode: '0600'
       when: not cluster_cert_stat.stat.exists
+  when: not (certbot_enable | default(false) | bool)
+
+- name: Deploy Let's Encrypt wildcard certificate for {{ current_cluster.name }}
+  block:
+    - name: Copy Let's Encrypt certificate to cluster cert path
+      ansible.builtin.copy:
+        src: /etc/ssl/certs/ratlab_wildcard.crt
+        dest: "{{ cluster_cert_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Copy Let's Encrypt key to cluster key path
+      ansible.builtin.copy:
+        src: /etc/ssl/private/ratlab_wildcard.key
+        dest: "{{ cluster_key_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+  when: certbot_enable | default(false) | bool
 
 - name: Render Kind cluster configuration
   ansible.builtin.template:
@@ -231,15 +253,23 @@
         dest: "/etc/nginx/sites-enabled/k8s-{{ current_cluster.name }}.conf"
         state: link
 
+    - name: Ensure dynamic dnsmasq hosts directory exists
+      ansible.builtin.file:
+        path: /etc/dnsmasq.hosts.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
     - name: Register {{ current_cluster.name }} domain in dynamic dnsmasq hosts
       ansible.builtin.copy:
         dest: "/etc/dnsmasq.hosts.d/k8s-{{ current_cluster.name }}.hosts"
         content: |
-          {% for dom in [current_cluster.domain, (current_cluster.alt_domain | default(''))] | select('length') | unique %}
+          {% for dom in [current_cluster.domain, (current_cluster.alt_domain | default(''))] | select | unique %}
           {% if tailscale_node_ip is defined and tailscale_node_ip | length > 0 %}
           {{ tailscale_node_ip }} {{ dom }}
           {% endif %}
-          {% if ansible_default_ipv4.address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
+          {% if (ansible_default_ipv4 | default({})).address is defined and ansible_default_ipv4.address != (tailscale_node_ip | default('')) %}
           {{ ansible_default_ipv4.address }} {{ dom }}
           {% endif %}
           {% endfor %}

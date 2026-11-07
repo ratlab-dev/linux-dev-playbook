@@ -1,0 +1,22 @@
+---
+# Defaults for role: certbot
+certbot_enable: false
+certbot_domain: "{{ internal_domain | default('ratlab.dev') }}"
+certbot_wildcard_domains:
+  - "{{ certbot_domain }}"
+  - "*.{{ certbot_domain }}"
+  - "*.k8s.{{ certbot_domain }}"
+
+# Cloudflare DNS-01 API credentials
+certbot_cloudflare_credentials_dir: "/etc/letsencrypt"
+certbot_cloudflare_credentials_file: "{{ certbot_cloudflare_credentials_dir }}/cloudflare.ini"
+certbot_cloudflare_api_token: "{{ cloudflare_api_token | default('') }}"
+certbot_dns_propagation_seconds: 30
+
+# Let's Encrypt registration & notifications
+certbot_admin_email: "admin@{{ internal_domain | default('ratlab.dev') }}"
+certbot_staging: false   # Set to true for Let's Encrypt Staging environment (testing rate limits)
+
+# Central certificate targets (matches paths expected by Nginx & all devbox services)
+certbot_central_cert_path: "/etc/ssl/certs/ratlab_wildcard.crt"
+certbot_central_key_path: "/etc/ssl/private/ratlab_wildcard.key"

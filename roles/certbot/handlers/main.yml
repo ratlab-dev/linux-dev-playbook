@@ -1,0 +1,8 @@
+---
+# Handlers for role: certbot
+
+- name: Reload nginx
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+  failed_when: false

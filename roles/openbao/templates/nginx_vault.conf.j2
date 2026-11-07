@@ -7,8 +7,13 @@ server {
     listen 443 ssl;
     server_name {{ openbao_domain }};
 
+{% if certbot_enable | default(false) | bool %}
+    ssl_certificate /etc/ssl/certs/ratlab_wildcard.crt;
+    ssl_certificate_key /etc/ssl/private/ratlab_wildcard.key;
+{% else %}
     ssl_certificate {{ openbao_tls_dir }}/vault.crt;
     ssl_certificate_key {{ openbao_tls_dir }}/vault.key;
+{% endif %}
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;

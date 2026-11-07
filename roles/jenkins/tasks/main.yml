@@ -281,7 +281,7 @@
   retries: 30
   delay: 3
 
-- name: Allow Jenkins ports in UFW if installed
+- name: Configure Jenkins firewall rules in UFW if installed (Internal to localhost only)
   block:
     - name: Check if ufw is installed
       ansible.builtin.command: which ufw
@@ -289,11 +289,12 @@
       changed_when: false
       failed_when: false
 
-    - name: Allow Jenkins ports in UFW
+    - name: Ensure internal Jenkins ports are not exposed in UFW
       ansible.builtin.command: "{{ item }}"
       loop:
-        - "ufw allow {{ jenkins_http_port }}/tcp"
-        - "ufw allow {{ jenkins_jnlp_port }}/tcp"
+        - "ufw delete allow {{ jenkins_http_port }}/tcp"
+        - "ufw delete allow {{ jenkins_jnlp_port }}/tcp"
+      failed_when: false
       when: ufw_jenkins_check.rc == 0
       changed_when: false
 

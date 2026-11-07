@@ -357,7 +357,7 @@
                   failed_when: false
               when:
                 - intermediate_cert_checkend.rc == 0
-                - intermediate_pubkey_match.rc is defined and intermediate_pubkey_match.rc == 0
+                - not (local_intermediate_csr_exists | bool) or (intermediate_pubkey_match.rc is defined and intermediate_pubkey_match.rc == 0)
           when: local_intermediate_crt_exists | bool
 
         - name: Verify whether Intermediate CA is now active in OpenBao
@@ -440,7 +440,9 @@
               ansible.builtin.command: "{{ openbao_install_dir }}/bao write {{ openbao_pki_mount }}/intermediate/set-signed certificate=@{{ openbao_tls_dir }}/intermediate_bundle.crt"
               environment: "{{ openbao_authenticated_env }}"
               changed_when: true
-          when: ca_read_check_after_existing.rc != 0
+          when:
+            - ca_read_check_after_existing.rc != 0
+            - not (local_intermediate_crt_exists | bool and (intermediate_cert_checkend.rc | default(1) == 0))
       when: ca_read_check.rc != 0
 
     - name: Configure PKI role for Ratlab services (*.ratlab.dev)
@@ -542,7 +544,9 @@
         owner: root
         group: root
         mode: '0640'
-  when: openbao_init_data is defined
+  when:
+    - openbao_init_data is defined
+    - not (certbot_enable | default(false) | bool)
 
 - name: Display OpenBao / Vault login credentials banner
   ansible.builtin.debug:

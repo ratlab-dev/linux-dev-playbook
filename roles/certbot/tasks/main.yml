@@ -1,0 +1,193 @@
+---
+# Tasks for role: certbot (Let's Encrypt Wildcard via Cloudflare DNS-01 & Vault Backup)
+
+- name: Validate that Cloudflare API Token is provided
+  ansible.builtin.assert:
+    that:
+      - certbot_cloudflare_api_token is defined
+      - (certbot_cloudflare_api_token | trim | length) > 0
+    fail_msg: >-
+      Cloudflare API Token is required for Let's Encrypt DNS-01 verification!
+      Please provide it via -e cloudflare_api_token=<token> or set the CLOUDFLARE_API_TOKEN environment variable.
+
+- name: Install Certbot and Cloudflare DNS plugin (Debian family)
+  ansible.builtin.apt:
+    name:
+      - certbot
+      - python3-certbot-dns-cloudflare
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == 'Debian'
+
+- name: Install Certbot and Cloudflare DNS plugin (RedHat family)
+  ansible.builtin.dnf:
+    name:
+      - certbot
+      - python3-certbot-dns-cloudflare
+    state: present
+  when: ansible_os_family == 'RedHat'
+
+- name: Install Certbot and Cloudflare DNS plugin (Archlinux)
+  ansible.builtin.pacman:
+    name:
+      - certbot
+      - certbot-dns-cloudflare
+    state: present
+  when: ansible_os_family == 'Archlinux'
+
+- name: Ensure Let's Encrypt configuration and hooks directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop:
+    - "{{ certbot_cloudflare_credentials_dir }}"
+    - /etc/letsencrypt/renewal-hooks
+    - /etc/letsencrypt/renewal-hooks/deploy
+
+- name: Ensure central SSL directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /etc/ssl/certs
+    - /etc/ssl/private
+
+- name: Deploy Cloudflare API credentials file (strictly 0600 permissions)
+  ansible.builtin.template:
+    src: cloudflare.ini.j2
+    dest: "{{ certbot_cloudflare_credentials_file }}"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Deploy renewal deploy-hook script (/etc/letsencrypt/renewal-hooks/deploy/reload-services.sh)
+  ansible.builtin.template:
+    src: reload-services.sh.j2
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-services.sh
+    owner: root
+    group: root
+    mode: '0750'
+
+# ==============================================================================
+# Step 1: Check existing certificate on disk
+# ==============================================================================
+- name: Check if central certificate already exists on disk
+  ansible.builtin.stat:
+    path: "{{ certbot_central_cert_path }}"
+  register: certbot_disk_cert
+
+- name: Verify validity of existing certificate on disk (valid for > 30 days)
+  ansible.builtin.command: >-
+    openssl x509 -checkend 2592000 -noout -in {{ certbot_central_cert_path }}
+  register: certbot_disk_cert_checkend
+  when: certbot_disk_cert.stat.exists
+  failed_when: false
+  changed_when: false
+
+# ==============================================================================
+# Step 2: If missing or expiring on disk, check OpenBao Vault
+# ==============================================================================
+- name: Check if OpenBao service is active on target devbox
+  ansible.builtin.command: systemctl is-active openbao
+  register: openbao_service_check
+  failed_when: false
+  changed_when: false
+
+- name: Check if OpenBao init credentials exist
+  ansible.builtin.stat:
+    path: /root/.openbao_init.json
+  register: openbao_init_stat
+
+- name: Query OpenBao Vault for existing Let's Encrypt certificate
+  ansible.builtin.shell: |
+    set -e
+    ROOT_TOKEN=$(jq -r '.root_token' /root/.openbao_init.json)
+    curl -fsSL -H "X-Vault-Token: $ROOT_TOKEN" http://127.0.0.1:{{ openbao_port | default(8200) }}/v1/secret/data/certs/ratlab_wildcard
+  register: vault_cert_raw
+  failed_when: false
+  changed_when: false
+  when:
+    - not (certbot_disk_cert.stat.exists and (certbot_disk_cert_checkend.rc | default(1) == 0))
+    - openbao_service_check.rc == 0
+    - openbao_init_stat.stat.exists
+  no_log: true
+
+- name: Restore Let's Encrypt certificate from OpenBao Vault if present
+  block:
+    - name: Write restored certificate from Vault to central cert path
+      ansible.builtin.copy:
+        content: "{{ ((vault_cert_raw.stdout | from_json).data.data.certificate | trim) }}\n"
+        dest: "{{ certbot_central_cert_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Write restored private key from Vault to central key path
+      ansible.builtin.copy:
+        content: "{{ ((vault_cert_raw.stdout | from_json).data.data.private_key | trim) }}\n"
+        dest: "{{ certbot_central_key_path }}"
+        owner: root
+        group: root
+        mode: '0640'
+
+    - name: Verify validity of restored certificate from Vault
+      ansible.builtin.command: >-
+        openssl x509 -checkend 2592000 -noout -in {{ certbot_central_cert_path }}
+      register: restored_vault_cert_checkend
+      failed_when: false
+      changed_when: false
+  when:
+    - vault_cert_raw is defined
+    - vault_cert_raw.rc is defined
+    - vault_cert_raw.rc == 0
+    - (vault_cert_raw.stdout | trim | length) > 0
+  no_log: true
+
+- name: Determine if Let's Encrypt certificate issuance is needed
+  ansible.builtin.set_fact:
+    cert_issuance_needed: >-
+      {{
+        not (
+          (certbot_disk_cert.stat.exists and (certbot_disk_cert_checkend.rc | default(1) == 0)) or
+          (restored_vault_cert_checkend is defined and restored_vault_cert_checkend.rc == 0)
+        )
+      }}
+
+# ==============================================================================
+# Step 3: Issue via Certbot if neither disk nor Vault had a valid certificate
+# ==============================================================================
+- name: Issue wildcard certificate via Let's Encrypt and Cloudflare DNS
+  ansible.builtin.command: >-
+    certbot certonly
+    --dns-cloudflare
+    --dns-cloudflare-credentials {{ certbot_cloudflare_credentials_file }}
+    --dns-cloudflare-propagation-seconds {{ certbot_dns_propagation_seconds }}
+    {% for domain in certbot_wildcard_domains %} -d {{ domain }}{% endfor %}
+    --non-interactive
+    --agree-tos
+    --email {{ certbot_admin_email }}
+    --preferred-challenges dns-01
+    {% if certbot_staging | bool %}--staging{% endif %}
+    --deploy-hook /etc/letsencrypt/renewal-hooks/deploy/reload-services.sh
+  when: cert_issuance_needed | bool
+  no_log: true
+  notify: Reload nginx
+
+- name: Run deploy-hook to ensure central symlinks and Vault backup are established
+  ansible.builtin.command: /etc/letsencrypt/renewal-hooks/deploy/reload-services.sh
+  changed_when: false
+
+- name: Enable and start systemd certbot renewal timer
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started
+  failed_when: false

@@ -130,7 +130,7 @@
   retries: 30
   delay: 2
 
-- name: Allow Gitea ports (HTTP 3000, SSH 2222) in UFW if installed
+- name: Configure Gitea firewall rules in UFW if installed (SSH only; HTTP internal)
   block:
     - name: Check if ufw is installed
       ansible.builtin.command: which ufw
@@ -138,11 +138,12 @@
       changed_when: false
       failed_when: false
 
-    - name: Allow Gitea traffic in UFW
+    - name: Configure Gitea ports in UFW
       ansible.builtin.command: "{{ item }}"
       loop:
-        - "ufw allow {{ gitea_http_port }}/tcp"
+        - "ufw delete allow {{ gitea_http_port }}/tcp"
         - "ufw allow {{ gitea_ssh_port }}/tcp"
+      failed_when: false
       when: ufw_gitea_check.rc == 0
       changed_when: false
 

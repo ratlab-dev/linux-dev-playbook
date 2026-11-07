@@ -1,0 +1,4 @@
+# Cloudflare API token used by Certbot for DNS-01 challenge
+# Managed by Ansible (roles/certbot)
+# Permissions: Zone.DNS:Edit for {{ certbot_domain }}
+dns_cloudflare_api_token = {{ certbot_cloudflare_api_token }}

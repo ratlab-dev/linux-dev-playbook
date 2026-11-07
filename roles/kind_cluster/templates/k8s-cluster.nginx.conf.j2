@@ -5,8 +5,13 @@ server {
     listen 443 ssl;
     server_name {{ current_cluster.domain }}{% if current_cluster.alt_domain is defined %} {{ current_cluster.alt_domain }}{% endif %};
 
+{% if certbot_enable | default(false) | bool %}
+    ssl_certificate /etc/ssl/certs/ratlab_wildcard.crt;
+    ssl_certificate_key /etc/ssl/private/ratlab_wildcard.key;
+{% else %}
     ssl_certificate {{ cluster_cert_path }};
     ssl_certificate_key {{ cluster_key_path }};
+{% endif %}
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
